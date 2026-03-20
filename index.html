@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BIM Viewer — Vérification IFC</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- Barre de navigation -->
+      <header id="topbar">
+        <div id="logo">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect x="2" y="14" width="10" height="12" fill="#4f8ef7"/>
+            <rect x="14" y="8" width="12" height="18" fill="#7cb4ff"/>
+            <rect x="6" y="2" width="16" height="10" fill="#2563eb" opacity="0.8"/>
+          </svg>
+          <span>BIM Viewer</span>
+        </div>
+
+        <div id="toolbar">
+          <button class="tool-btn active" id="btn-orbit" title="Orbiter (O)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/><path d="M2 12h20"/></svg>
+            Orbiter
+          </button>
+          <button class="tool-btn" id="btn-select" title="Sélectionner (S)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-7 1-4 7z"/></svg>
+            Sélectionner
+          </button>
+          <div class="separator"></div>
+          <button class="tool-btn" id="btn-fit" title="Recadrer la vue">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            Recadrer
+          </button>
+          <button class="tool-btn" id="btn-section" title="Plan de coupe">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h20M12 2v20"/><rect x="6" y="6" width="12" height="12" stroke-dasharray="3 2"/></svg>
+            Coupe
+          </button>
+          <div class="separator"></div>
+          <label class="tool-btn upload-btn" for="ifc-input" title="Charger un fichier IFC">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Charger IFC
+          </label>
+          <input type="file" id="ifc-input" accept=".ifc" style="display:none" />
+        </div>
+
+        <div id="status-bar">
+          <span id="status-msg">Aucun fichier chargé</span>
+          <div id="loading-bar" style="display:none">
+            <div id="loading-fill"></div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Zone principale -->
+      <div id="main">
+
+        <!-- Panneau gauche : arbre du modèle -->
+        <aside id="panel-left" class="panel">
+          <div class="panel-header">
+            <span>Arbre du modèle</span>
+            <button class="icon-btn" id="btn-toggle-left" title="Masquer">◀</button>
+          </div>
+          <div class="panel-body" id="model-tree">
+            <div class="empty-hint">
+              Chargez un fichier IFC<br>pour explorer la structure
+            </div>
+          </div>
+          <div class="panel-section" id="categories-section" style="display:none">
+            <div class="panel-header small">Catégories</div>
+            <div id="categories-list"></div>
+          </div>
+        </aside>
+
+        <!-- Viewport 3D -->
+        <div id="viewport-wrapper">
+          <canvas id="viewer-canvas"></canvas>
+
+          <!-- Overlay drop zone -->
+          <div id="drop-zone">
+            <div class="drop-content">
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#4f8ef7" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <p>Glissez votre fichier IFC ici</p>
+              <p class="sub">ou utilisez le bouton <strong>Charger IFC</strong></p>
+            </div>
+          </div>
+
+          <!-- Axes indicator -->
+          <div id="axes-overlay">
+            <canvas id="axes-canvas" width="80" height="80"></canvas>
+          </div>
+
+          <!-- Compteur d'éléments -->
+          <div id="model-stats" style="display:none">
+            <span id="stat-elements">0 éléments</span>
+          </div>
+
+          <!-- Section plane controls -->
+          <div id="section-controls" style="display:none">
+            <label>Axe
+              <select id="section-axis">
+                <option value="x">X</option>
+                <option value="y">Y</option>
+                <option value="z" selected>Z</option>
+              </select>
+            </label>
+            <label>Position
+              <input type="range" id="section-pos" min="-50" max="50" value="0" step="0.5">
+            </label>
+            <button id="btn-section-off">Fermer</button>
+          </div>
+        </div>
+
+        <!-- Panneau droit : propriétés -->
+        <aside id="panel-right" class="panel">
+          <div class="panel-header">
+            <span>Propriétés</span>
+            <button class="icon-btn" id="btn-toggle-right" title="Masquer">▶</button>
+          </div>
+          <div class="panel-body" id="properties-panel">
+            <div class="empty-hint">
+              Sélectionnez un élément<br>pour voir ses propriétés
+            </div>
+          </div>
+        </aside>
+
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
