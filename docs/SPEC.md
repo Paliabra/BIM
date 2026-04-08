@@ -109,6 +109,65 @@ POUR CHAQUE IfcSpace WHERE nom = "cellier"
 
 > L'utilisateur n'a pas besoin de connaître les types IFC des équipements à l'avance. Le moteur trouve tout ce qui est physiquement dans l'espace. C'est la géométrie qui répond, pas les propriétés.
 
+---
+
+### Exemple détaillé — Accessibilité des équipements en chaufferie
+
+**Contexte** : Local CHAUFFERIE / Production ECS collective  
+**Règle normative** : Un espace libre d'au moins 0,50 m doit être disponible autour de chaque générateur  
+**Vérification** : Tous les équipements de la chaufferie sont-ils accessibles ?
+
+**Primitives utilisées** : Containment + Mesure de distance + Intersection
+
+**Étape 1 — Identifier la chaufferie**
+
+Le moteur cherche un `IfcSpace` WHERE nom = "chaufferie".
+- Si trouvé : volume extrait automatiquement
+- Sinon : sélection manuelle dans la vue 3D
+
+**Étape 2 — Lister les équipements contenus**
+
+```
+POUR CHAQUE objet CONTENU DANS volume(chaufferie)
+  FILTRER catégorie = équipement (IfcBoiler, IfcUnitaryEquipment, IfcFlowMovingDevice…)
+  → liste des générateurs et équipements
+```
+
+**Étape 3 — Vérifier le dégagement de 0,50 m**
+
+Pour chaque équipement, le moteur crée une **zone tampon de 0,50 m** autour de sa géométrie et vérifie si cette zone est libre de tout autre objet solide (murs, autres équipements, éléments structurels…).
+
+```
+POUR CHAQUE équipement dans chaufferie
+  CRÉER buffer(équipement, 0.50m)
+  SI intersection(buffer, autres_objets_solides) = vide
+    → CONFORME
+  SINON
+    → NON CONFORME — afficher l'objet en conflit
+```
+
+**Étape 4 — Résultat**
+
+| Statut | Signification |
+|---|---|
+| Conforme | Dégagement ≥ 0,50 m autour de l'équipement |
+| Non conforme | Un objet empiète dans la zone de 0,50 m |
+
+- Équipements non conformes mis en surbrillance dans la vue 3D
+- Objets en conflit également identifiés et affichés
+- Exportable (PDF, Excel, BCF)
+
+**La règle dans l'éditeur**
+
+```
+POUR CHAQUE IfcSpace WHERE nom = "chaufferie"
+  POUR CHAQUE équipement CONTENU DANS espace
+    VÉRIFIER espace libre >= 0.50m AUTOUR DE équipement
+    RÉSULTAT : CONFORME / NON CONFORME + objet en conflit
+```
+
+> Cette vérification est purement géométrique. La norme définit une distance, la géométrie du modèle fournit les positions. Aucune propriété déclarée n'est nécessaire.
+
 ### Les propriétés IFC en complément
 
 La géométrie est la **source de vérité primaire**. Les propriétés déclarées dans le modèle IFC sont exploitées en **enrichissement secondaire**, comme dans les autres visionneuses.
