@@ -365,6 +365,27 @@ L'utilisateur peut **basculer librement** entre les 3 modes. Une règle créée 
 - Superposition du modèle sur une **carte géographique** (fond de plan cartographique)
 - Basé sur les coordonnées géographiques définies dans `IfcSite`
 - Permet la mise en contexte urbain et territorial du modèle
+- Activable/désactivable par **toggle (ON/OFF)** depuis l'interface
+
+### Toggle cartographique
+
+| État | Comportement |
+|---|---|
+| **OFF** | Maquette seule sur fond neutre — vue isolée, focus sur le modèle |
+| **ON** | Maquette au premier plan + données cartographiques en arrière-plan |
+
+### Priorité de rendu — maquette toujours au premier plan
+
+La carte pouvant contenir des données au même emplacement géographique (bâtiments voisins, végétation, voirie…), la maquette IFC est **toujours rendue en premier plan**, quelle que soit la densité des données cartographiques.
+
+```
+Couche 1 — Maquette IFC              ← premier plan (priorité absolue)
+Couche 2 — Données cartographiques   ← contexte (bâtiments, routes…)
+Couche 3 — Fond de carte             ← arrière-plan
+```
+
+- Les données cartographiques ne peuvent **jamais masquer** la maquette
+- Transparence optionnelle des couches cartographiques pour lire le contexte sans gêner la maquette
 
 ---
 
