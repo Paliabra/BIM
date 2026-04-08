@@ -54,7 +54,13 @@ La visionneuse adopte une logique **SIG (Système d'Information Géographique)**
 | Requête statique sur attributs | Inférence dynamique depuis la géométrie |
 | Objets analysés en isolation | Objets analysés en relation |
 
-### Exemples représentatifs
+### Portée universelle
+
+Le moteur n'est pas conçu pour des cas prédéfinis. Il est conçu pour **tout cas** exprimable à partir d'objets IFC, de leurs positions et de leurs relations spatiales. L'utilisateur formule une intention — le moteur et l'agent IA se chargent de la traduire en analyse, quels que soient les objets et les relations impliqués.
+
+### Exemples illustratifs
+
+Les exemples ci-dessous illustrent la logique du moteur. Ils ne définissent pas les limites du système.
 
 - **Identifier les types de logements** en analysant la concomitance de pièces, murs, portes — sans que le logement soit explicitement déclaré dans le modèle
 - **Compter les prises électriques par logement** en croisant les modèles ARC et ELEC par leurs positions spatiales, sans information ajoutée par l'utilisateur
@@ -592,7 +598,7 @@ Après analyse géométrique, chaque objet IFC est représenté comme un nœud e
 
 ### Agent de Vérification Intelligent
 
-L'IA ne se contente pas de traduire une règle littéralement. Elle **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément.
+L'IA ne se contente pas de traduire une règle littéralement. Elle **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité de la règle.
 
 **Principe fondamental**
 
