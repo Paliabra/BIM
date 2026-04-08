@@ -115,58 +115,63 @@ POUR CHAQUE IfcSpace WHERE nom = "cellier"
 
 **Contexte** : Local CHAUFFERIE / Production ECS collective  
 **Règle normative** : Un espace libre d'au moins 0,50 m doit être disponible autour de chaque générateur  
-**Vérification** : Tous les équipements de la chaufferie sont-ils accessibles ?
+**Vérification** : Tous les équipements nécessitant une maintenance sont-ils accessibles ?
 
-**Primitives utilisées** : Containment + Mesure de distance + Intersection
+**Primitives utilisées** : Détection par type + Mesure de distance + Intersection
 
-**Étape 1 — Identifier la chaufferie**
+**Logique fondamentale — Object-first**
 
-Le moteur cherche un `IfcSpace` WHERE nom = "chaufferie".
-- Si trouvé : volume extrait automatiquement
-- Sinon : sélection manuelle dans la vue 3D
+L'intention réelle n'est pas "trouver les équipements dans un espace nommé chaufferie" mais **"vérifier que tout équipement nécessitant une maintenance est accessible"**. L'`IfcSpace` est une information secondaire, pas un prérequis. La vérification fonctionne même si aucun `IfcSpace` n'est défini.
 
-**Étape 2 — Lister les équipements contenus**
+**Étape 1 — Détection automatique des équipements de maintenance**
+
+Le moteur identifie automatiquement tous les objets nécessitant une maintenance selon leur type IFC, indépendamment de leur localisation dans le modèle :
+
+| Entité IFC | Équipement |
+|---|---|
+| `IfcBoiler` | Chaudière, générateur |
+| `IfcPump` | Pompe |
+| `IfcHeatExchanger` | Échangeur thermique |
+| `IfcCompressor` | Compresseur |
+| `IfcUnitaryEquipment` | Équipement technique unitaire |
+| `IfcFlowMovingDevice` | Équipements fluides actifs |
+
+Pour les objets de type ambigu, l'agent demande validation à l'utilisateur.
+
+**Étape 2 — Vérification du dégagement de 0,50 m**
+
+Pour chaque équipement détecté, le moteur crée une **zone tampon de 0,50 m** et vérifie si elle est libre de tout objet solide.
 
 ```
-POUR CHAQUE objet CONTENU DANS volume(chaufferie)
-  FILTRER catégorie = équipement (IfcBoiler, IfcUnitaryEquipment, IfcFlowMovingDevice…)
-  → liste des générateurs et équipements
-```
-
-**Étape 3 — Vérifier le dégagement de 0,50 m**
-
-Pour chaque équipement, le moteur crée une **zone tampon de 0,50 m** autour de sa géométrie et vérifie si cette zone est libre de tout autre objet solide (murs, autres équipements, éléments structurels…).
-
-```
-POUR CHAQUE équipement dans chaufferie
+DÉTECTER tous objets WHERE type = maintenance
+POUR CHAQUE équipement détecté
   CRÉER buffer(équipement, 0.50m)
   SI intersection(buffer, autres_objets_solides) = vide
     → CONFORME
   SINON
-    → NON CONFORME — afficher l'objet en conflit
+    → NON CONFORME + identification de l'objet en conflit
 ```
+
+**Étape 3 — Traitement parallèle des hypothèses**
+
+L'agent traite simultanément tous les cas plausibles :
+
+| Hypothèse | Traitement |
+|---|---|
+| Équipement détecté, dégagement suffisant | Conforme |
+| Équipement détecté, dégagement insuffisant | Non-conformité |
+| Équipement dans un espace inadéquat (bureau, logement…) | Alerte — emplacement suspect |
+| Équipement sans `IfcSpace` associé | Vérifié quand même, signalé |
+| Objet ambigu pouvant nécessiter maintenance | Demande de validation utilisateur |
 
 **Étape 4 — Résultat**
 
-| Statut | Signification |
-|---|---|
-| Conforme | Dégagement ≥ 0,50 m autour de l'équipement |
-| Non conforme | Un objet empiète dans la zone de 0,50 m |
-
-- Équipements non conformes mis en surbrillance dans la vue 3D
-- Objets en conflit également identifiés et affichés
+- Équipements conformes / non conformes mis en surbrillance dans la vue 3D
+- Objets en conflit identifiés
+- Alertes pour équipements en emplacement suspect
 - Exportable (PDF, Excel, BCF)
 
-**La règle dans l'éditeur**
-
-```
-POUR CHAQUE IfcSpace WHERE nom = "chaufferie"
-  POUR CHAQUE équipement CONTENU DANS espace
-    VÉRIFIER espace libre >= 0.50m AUTOUR DE équipement
-    RÉSULTAT : CONFORME / NON CONFORME + objet en conflit
-```
-
-> Cette vérification est purement géométrique. La norme définit une distance, la géométrie du modèle fournit les positions. Aucune propriété déclarée n'est nécessaire.
+> Cette vérification est purement géométrique et indépendante du nommage des espaces. La norme définit une distance, la géométrie du modèle fournit les positions. L'`IfcSpace` est exploité comme information contextuelle secondaire, jamais comme condition bloquante.
 
 ### Les propriétés IFC en complément
 
@@ -585,25 +590,59 @@ Après analyse géométrique, chaque objet IFC est représenté comme un nœud e
 }
 ```
 
+### Agent de Vérification Intelligent
+
+L'IA ne se contente pas de traduire une règle littéralement. Elle **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément.
+
+**Principe fondamental**
+
+> Les visionneuses classiques vérifient des **données**. Cet agent vérifie des **intentions**.
+
+Exemple : l'utilisateur écrit *"vérifier l'accessibilité des équipements de la chaufferie"*. L'agent comprend que l'intention est la maintenance des équipements techniques — il opère automatiquement la transformation vers une logique object-first, indépendante du nommage des espaces.
+
+**Génération des hypothèses**
+
+Pour toute règle soumise, l'agent :
+1. Analyse l'intention réelle derrière la formulation
+2. Identifie tous les cas plausibles dans le modèle
+3. Traite chaque hypothèse avec la primitive spatiale appropriée
+4. Présente un résultat complet couvrant tous les scénarios
+
+**Deux modes d'exécution**
+
+| Mode | Comportement |
+|---|---|
+| **Propose** | L'agent présente toutes les hypothèses identifiées et attend validation avant d'exécuter — l'utilisateur contrôle chaque décision |
+| **Execute** | L'agent exécute directement et présente les résultats avec les hypothèses traitées — comme un agent d'exécution de code |
+
+L'utilisateur choisit son mode selon son niveau de confiance dans la règle.
+
+**Flux complet**
+
+```
+Règle utilisateur (langage naturel)
+           ↓
+   Interprétation de l'intention
+           ↓
+   Génération des hypothèses
+           ↓
+     Mode Propose          Mode Execute
+  Validation user →            ↓
+           ↓           Exécution directe
+     Exécution
+           ↓
+  Résultats + hypothèses traitées + alertes
+  Objets mis en exergue dans la vue 3D
+```
+
 ### Interface IA
 
 - L'utilisateur pose des questions en **langage naturel**
 - L'IA dispose du graphe enrichi pour raisonner sur le modèle
-- Deux usages :
+- Trois usages :
   1. **Création de règles** (section 8 — Mode IA)
   2. **Interrogation directe** : *"Le garde-corps de la chambre 201 respecte-t-il la norme PMR ?"*
-
-### Flux
-
-```
-Question utilisateur (langage naturel)
-           ↓
-        Modèle IA
-           ↓
-  Graphe d'objets enrichi
-           ↓
-    Réponse structurée + objets mis en exergue
-```
+  3. **Vérification intelligente** : interprétation, hypothèses, exécution
 
 ---
 
