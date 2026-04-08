@@ -61,6 +61,53 @@ La visionneuse adopte une logique **SIG (Système d'Information Géographique)**
 - **Mesurer le linéaire de garde-corps** donnant sur un espace donné, même si le garde-corps est modélisé en un seul élément couvrant plusieurs niveaux
 - **Calculer le ratio d'ouverture** d'une pièce en mettant en relation les surfaces de fenêtres et la surface de sol
 - **Déduire la surface nette réelle** d'une pièce en soustrayant les emprises des objets encombrants sélectionnés par l'utilisateur
+- **Vérifier la présence des équipements dans le cellier** en listant tous les objets contenus dans le volume du cellier, sans connaître leur type IFC à l'avance
+
+### Exemple détaillé — Vérification des équipements dans le cellier
+
+Ce cas illustre le fonctionnement complet du moteur d'analyse spatiale.
+
+**Étape 1 — Identifier le cellier**
+
+Le moteur cherche un `IfcSpace` dont le nom correspond à "cellier".
+- Si trouvé : le volume est extrait automatiquement
+- Si absent ou mal nommé : l'utilisateur sélectionne l'espace manuellement dans la vue 3D (zone libre)
+
+**Étape 2 — Primitive Containment**
+
+```
+POUR CHAQUE objet dans le modèle
+  SI position(objet) EST CONTENUE DANS volume(cellier)
+    → ajouter à la liste
+```
+
+Tous les objets physiquement dans ce volume sont remontés, sans distinction de type a priori.
+
+**Étape 3 — Filtrage équipements**
+
+| Entité IFC | Équipement correspondant |
+|---|---|
+| `IfcElectricAppliance` | Machine à laver, congélateur… |
+| `IfcSanitaryTerminal` | Évier, chauffe-eau… |
+| `IfcFlowTerminal` | Équipements fluides |
+| `IfcFurnishingElement` | Mobilier technique |
+
+**Étape 4 — Résultat**
+
+- Liste des équipements présents dans le cellier
+- Objets mis en surbrillance dans la vue 3D
+- Exportable (PDF, Excel, BCF)
+
+**La règle dans l'éditeur**
+
+```
+POUR CHAQUE IfcSpace WHERE nom = "cellier"
+  LISTER tous objets CONTENUS DANS espace
+  FILTRER catégorie = équipement
+  AFFICHER résultat
+```
+
+> L'utilisateur n'a pas besoin de connaître les types IFC des équipements à l'avance. Le moteur trouve tout ce qui est physiquement dans l'espace. C'est la géométrie qui répond, pas les propriétés.
 
 ### Les propriétés IFC en complément
 
