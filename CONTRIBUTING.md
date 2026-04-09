@@ -27,3 +27,4 @@ En soumettant une contribution, vous acceptez les termes suivants :
 ## Conformité IFC
 
 Tout développement impliquant des entités ou relations IFC doit être conforme à la spécification officielle buildingSMART (ISO 16739). Les références aux entités IFC doivent utiliser la terminologie exacte du schéma.
+La priorité doit être donnée à l'analyse spatiale géométrique. Les propriétés IFC sont considérées comme des enrichissements secondaires.
