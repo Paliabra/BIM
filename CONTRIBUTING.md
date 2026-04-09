@@ -16,6 +16,7 @@ En soumettant une contribution, vous acceptez les termes suivants :
 - Amélioration des spécifications (fichier `docs/SPEC.md`)
 - Nouvelles fonctionnalités conformes à la vision du projet
 - Nouvelles règles de vérification pour le catalogue
+- Construction des logiques primaires et fondamentales
 
 ## Processus
 
