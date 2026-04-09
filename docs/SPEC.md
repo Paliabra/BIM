@@ -1,6 +1,6 @@
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 2.0 — Avril 2026  
+> Version 3.0 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -8,7 +8,7 @@
 ## Table des matières
 
 1. [Vision & Concept](#1-vision--concept)
-2. [Stack technique](#2-stack-technique)
+2. [Principes d'architecture](#2-principes-darchitecture)
 3. [Fichier projet encapsulé](#3-fichier-projet-encapsulé)
 4. [Chargement & Fédération](#4-chargement--fédération)
 5. [Moteur géométrique](#5-moteur-géométrique)
@@ -26,7 +26,8 @@
 17. [Couche IA](#17-couche-ia)
 18. [Contraintes de performance](#18-contraintes-de-performance)
 19. [Accès & Sauvegarde](#19-accès--sauvegarde)
-20. [Glossaire](#20-glossaire)
+20. [Licences](#20-licences)
+21. [Glossaire](#21-glossaire)
 
 ---
 
@@ -189,19 +190,27 @@ Toute décision technique est ancrée dans la terminologie et le schéma officie
 
 ---
 
-## 2. Stack technique
+## 2. Principes d'architecture
 
-| Rôle | Technologie |
-|---|---|
-| Langage | TypeScript |
-| Rendu 3D | Three.js |
-| Parsing IFC | web-ifc (C++ compilé en WebAssembly) |
-| Framework BIM | @thatopen/components |
-| Build | Vite |
+### Déploiement
 
-- **Traitement 100% client-side** — aucun serveur requis pour l'analyse
-- Aucune donnée du modèle ne transite vers un serveur externe
-- Versions IFC supportées : **2x3** et **4.3** de manière transparente pour l'utilisateur
+L'application peut être déployée en **web (navigateur)**, en **application desktop** ou en mode hybride. Le choix de la plateforme de déploiement est laissé à l'équipe de développement selon les contraintes de performance et d'usage.
+
+### Traitement local
+
+- Tout le traitement s'effectue **localement sur la machine de l'utilisateur** — aucun serveur requis pour l'analyse
+- Aucune donnée du modèle IFC ne transite vers un serveur externe
+- L'application doit fonctionner **sans connexion internet** une fois chargée
+
+### Versions IFC supportées
+
+- **IFC 2x3** — version la plus répandue dans les fichiers réels
+- **IFC 4.3** — version de référence actuelle buildingSMART
+- La gestion des deux versions est transparente pour l'utilisateur
+
+### Indépendance technologique
+
+La présente spécification décrit les **fonctionnalités et comportements attendus**. Les choix technologiques (langages, bibliothèques, moteurs de rendu, formats de stockage intermédiaires) sont laissés à l'équipe de développement. Aucune technologie spécifique n'est imposée par cette spec.
 
 ---
 
@@ -230,6 +239,20 @@ L'utilisateur travaille avec un **fichier projet unique** qui contient tout le c
 - Le fichier IFC original n'est **jamais modifié**
 - À l'ouverture, le moteur fusionne les IFC et le delta pour produire une vue enrichie
 - Un seul fichier à partager — tout le contexte du projet est préservé
+
+### Interopérabilité
+
+Le format du fichier projet est **ouvert, documenté et non propriétaire** :
+- Sa structure est publique et lisible par des outils tiers
+- Aucune dépendance à un vendeur ou une technologie spécifique
+- Importable et exportable par d'autres outils
+- Aligné sur les standards ouverts existants (IFC, BCF) où pertinent
+
+### Résilience des identifiants (GUID)
+
+Les outils auteurs (Revit, ArchiCAD…) peuvent regénérer les identifiants uniques (GlobalId) des objets lors d'un ré-export. Or le delta, les annotations et l'historique s'accrochent à ces identifiants.
+
+Le moteur implémente une **stratégie de réconciliation** : si un GUID ne correspond plus, l'objet est retrouvé par **empreinte composite** (Type IFC + Nom + Coordonnées spatiales). Cette stratégie garantit la continuité des données entre versions de modèle.
 
 ---
 
@@ -292,6 +315,18 @@ Le moteur permet de construire des **entités virtuelles** non déclarées dans 
 ### Gestion des tolérances géométriques
 
 Les modèles IFC présentent des imprécisions de modélisation (joints à ±quelques mm). Le moteur intègre une **tolérance configurable** pour les calculs d'adjacence et d'intersection.
+
+### Accélération spatiale
+
+Pour garantir des performances en temps réel sur des modèles lourds, le moteur construit une **structure d'indexation spatiale** dès le chargement du modèle. Cette structure permet de localiser rapidement les objets dans l'espace sans tester l'intégralité du modèle à chaque requête.
+
+### Cache des résultats spatiaux
+
+Une fois une analyse spatiale calculée (ex : "objets contenus dans le cellier"), le résultat est **mis en cache**. Les requêtes suivantes filtrent le cache au lieu de recalculer depuis zéro. Le cache est invalidé lors de modifications du modèle ou du delta.
+
+### Re-qualification des objets non typés
+
+Certains objets IFC sont exportés sans type précis (équivalent d'une "boîte noire" sans catégorie). Le moteur permet leur **re-qualification sémantique via la couche delta** : l'utilisateur ou l'agent IA peut leur attribuer un type fonctionnel, ce qui permet aux règles métier de s'appliquer sur ces objets.
 
 ---
 
@@ -415,7 +450,7 @@ L'utilisateur peut **basculer librement** entre les 3 modes. Une règle créée 
 
 ### Rendu
 
-- Visionneuse 3D WebGL via Three.js
+- Visionneuse 3D temps réel
 - Navigation standard : orbite, zoom, pan
 - Affichage multi-modèles simultané avec gestion de la visibilité par discipline
 
@@ -477,6 +512,10 @@ L'utilisateur peut **basculer librement** entre les 3 modes. Une règle créée 
 - **Recalage automatique** : alignement sur la référence `IfcSite` / `IfcGeometricRepresentationContext`
 - Tolérance de recalage configurable
 
+### Gestion des systèmes de coordonnées (CRS)
+
+Les maquettes IFC sont souvent mal géoréférencées ou modélisées loin de l'origine géographique réelle. L'application prévoit une interface permettant à l'utilisateur de **saisir manuellement un point de référence géographique** (latitude, longitude, rotation par rapport au Nord vrai) lorsque les métadonnées `IfcSite` sont absentes, incomplètes ou incorrectes. Ce point de référence est sauvegardé dans le fichier projet.
+
 ### Affichage sur carte
 
 - Superposition du modèle sur une **carte géographique** (fond de plan cartographique)
@@ -515,6 +554,10 @@ Couche 3 — Fond de carte             ← arrière-plan
   - **Modifiés** (géométrie ou propriétés)
 - Visualisation des différences directement dans la vue 3D (code couleur)
 - Comparaison des **résultats d'analyse** entre les deux versions pour suivre l'évolution de la conformité
+
+### Réconciliation inter-versions
+
+La comparaison s'appuie sur la **stratégie de réconciliation des identifiants** décrite en section 3. Si les GUID ont changé entre v1 et v2, le moteur retrouve les objets correspondants par empreinte composite pour assurer une comparaison fiable.
 
 ---
 
@@ -658,29 +701,47 @@ Règle utilisateur (langage naturel)
 |---|---|
 | Taille max par fichier | 500 MB |
 | Premiers objets affichés | < 5 secondes après chargement |
-| Traitement | 100% client-side (WebAssembly) |
+| Traitement | 100% local, sans serveur |
 | Analyse démarrée avant fin de chargement | Oui (streaming) |
 | Niveaux de détail (LOD) | Oui, adaptés à la distance caméra |
 
-### Stratégies techniques
+### Exigences de performance
 
-- **Parsing en streaming** via web-ifc — pas de chargement intégral en mémoire
-- **Web Workers** pour le parsing en arrière-plan sans bloquer l'interface
-- **LOD géométrique** pour le rendu 3D selon la distance caméra
+- **Chargement progressif** — les objets s'affichent au fur et à mesure du parsing, l'interface n'est jamais bloquée
+- **Traitement en arrière-plan** — le parsing et les calculs spatiaux s'effectuent sans bloquer l'interface
+- **Niveaux de détail** — le rendu adapte la précision géométrique selon la distance de la caméra
 - **Analyse incrémentale** — les règles s'exécutent au fur et à mesure du chargement
+- **Gestion mémoire** — seuls les objets visibles ou en cours d'analyse sont chargés en mémoire active ; la géométrie parsée est stockée localement pour éviter les rechargements
 
 ---
 
 ## 19. Accès & Sauvegarde
 
 - Application en **accès libre** — aucun compte requis
-- Fonctionne entièrement dans le navigateur
+- Fonctionne localement, sans connexion internet requise
 - Règles sauvegardées dans le fichier projet, **réutilisables sur n'importe quel autre modèle**
 - Aucune donnée du modèle IFC n'est envoyée vers un serveur
 
 ---
 
-## 20. Glossaire
+## 20. Licences
+
+| Composant | Licence |
+|---|---|
+| **Spécifications** (ce document) | CC-BY-SA 4.0 — Attribution, Partage dans les mêmes conditions |
+| **Code source** | Apache 2.0 |
+
+### CC-BY-SA 4.0 pour les spécifications
+
+Toute personne peut utiliser, modifier et redistribuer ces spécifications à condition de **citer l'auteur** et de publier les dérivés sous la **même licence**. Cela garantit que la méthode d'analyse spatiale reste ouverte et qu'aucun acteur ne peut s'en approprier la propriété intellectuelle.
+
+### Apache 2.0 pour le code
+
+Licence permissive incluant une **clause de protection sur les brevets**. Tout contributeur apportant du code garantit implicitement qu'aucune poursuite pour brevet ne sera engagée contre les utilisateurs du moteur.
+
+---
+
+## 21. Glossaire
 
 | Terme | Définition |
 |---|---|
@@ -693,5 +754,8 @@ Règle utilisateur (langage naturel)
 | **Couche delta** | Fichier JSON contenant les ajouts et modifications de paramètres de l'utilisateur, superposé au fichier IFC original |
 | **BCF** | BIM Collaboration Format — format standard pour la communication de problèmes entre outils BIM |
 | **LOD** | Level of Detail — niveau de détail géométrique adapté à la distance de la caméra |
-| **web-ifc** | Bibliothèque open source parsant les fichiers IFC via un moteur C++ compilé en WebAssembly |
 | **SIG** | Système d'Information Géographique — paradigme d'analyse spatiale par objets et positions |
+| **GUID** | Global Unique Identifier — identifiant unique attribué à chaque objet IFC |
+| **CRS** | Coordinate Reference System — système de coordonnées géographiques |
+| **Empreinte composite** | Combinaison Type IFC + Nom + Coordonnées spatiales utilisée pour retrouver un objet dont le GUID a changé |
+| **Cache spatial** | Résultats d'analyses spatiales mémorisés pour éviter les recalculs |
