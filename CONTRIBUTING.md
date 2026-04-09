@@ -8,6 +8,7 @@ En soumettant une contribution, vous acceptez les termes suivants :
 
 - **Code source** : tout apport de code est placé sous licence [Apache 2.0](LICENSE)
 - **Spécifications et documentation** : tout apport à la documentation ou aux spécifications est placé sous licence [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+- **IA et Copyright** : En soumettant une contribution générée par une IA, vous garantissez avoir le droit de distribuer ce contenu selon les licences du projet.
 
 ## Types de contributions
 
