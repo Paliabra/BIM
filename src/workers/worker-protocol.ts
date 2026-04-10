@@ -13,6 +13,11 @@ export type ToWorker =
       expressId: number
       modelId: string
     }
+  | {
+      /** Free web-ifc API memory for a model that has been unloaded from the scene */
+      type: 'REMOVE'
+      modelId: string
+    }
 
 // ─── Worker → Main ───────────────────────────────────────────────────────────
 

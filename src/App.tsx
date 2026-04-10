@@ -48,6 +48,8 @@ interface AppState {
   sceneVersion: number
   /** Bumped on each PROPERTIES message — triggers PropertiesPanel re-read */
   propertiesVersion: number
+  /** Worker error message — null when no error */
+  workerError: string | null
 }
 
 type AppAction =
@@ -63,6 +65,8 @@ type AppAction =
   | { type: 'MODEL_DISCIPLINE'; modelId: string; discipline: string }
   | { type: 'MODE_TOGGLE' }
   | { type: 'FIT' }
+  | { type: 'WORKER_ERROR'; message: string }
+  | { type: 'DISMISS_ERROR' }
 
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
@@ -111,6 +115,12 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'PROPERTIES_RECEIVED':
       return { ...state, propertiesVersion: state.propertiesVersion + 1 }
 
+    case 'WORKER_ERROR':
+      return { ...state, loading: null, workerError: action.message }
+
+    case 'DISMISS_ERROR':
+      return { ...state, workerError: null }
+
     case 'MODEL_VISIBILITY':
       return {
         ...state,
@@ -149,6 +159,7 @@ const initialState: AppState = {
   pendingFile: null,
   sceneVersion: 0,
   propertiesVersion: 0,
+  workerError: null,
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -206,8 +217,12 @@ export function App() {
           break
         }
         case 'ERROR': {
-          console.error('[IFC Worker]', msg.message)
-          dispatch({ type: 'MODEL_DONE', models: registryRef.current.all() })
+          const model = registryRef.current.get(msg.modelId)
+          const label = model ? `"${model.filename}"` : `modèle ${msg.modelId.slice(0, 8)}`
+          dispatch({
+            type: 'WORKER_ERROR',
+            message: `Erreur lors du chargement de ${label} : ${msg.message}`,
+          })
           break
         }
       }
@@ -374,6 +389,21 @@ export function App() {
           ⊠ Cadrer
         </button>
       </header>
+
+      {/* ── Error banner ─────────────────────────────────────────────────── */}
+      {state.workerError && (
+        <div className="shrink-0 flex items-start gap-3 px-4 py-2 bg-red-900/80 border-b border-red-700 text-red-200 text-xs">
+          <span className="shrink-0 text-red-400">⚠</span>
+          <span className="flex-1">{state.workerError}</span>
+          <button
+            onClick={() => dispatch({ type: 'DISMISS_ERROR' })}
+            className="shrink-0 text-red-400 hover:text-white transition-colors ml-2"
+            title="Fermer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* ── Main content ──────────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0">

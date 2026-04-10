@@ -53,6 +53,19 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
     post({ type: 'PROPERTIES', modelId: msg.modelId, expressId: msg.expressId, data })
     return
   }
+
+  if (msg.type === 'REMOVE') {
+    const entry = apis.get(msg.modelId)
+    if (entry) {
+      try {
+        entry.api.CloseModel(entry.modelHandle)
+      } catch {
+        // CloseModel may throw on already-closed models — ignore
+      }
+      apis.delete(msg.modelId)
+    }
+    return
+  }
 }
 
 // ─── LOAD handler ─────────────────────────────────────────────────────────────
@@ -174,11 +187,11 @@ async function handleLoad(modelId: string, buffer: ArrayBuffer) {
           objectCount++
         }
 
-        // Update global bbox
-        if (localBboxMin[0] < globalBboxMin[0]) globalBboxMin = localBboxMin
+        // Update global bbox — compare each component independently (no array reassignment)
+        if (localBboxMin[0] < globalBboxMin[0]) globalBboxMin[0] = localBboxMin[0]
         if (localBboxMin[1] < globalBboxMin[1]) globalBboxMin[1] = localBboxMin[1]
         if (localBboxMin[2] < globalBboxMin[2]) globalBboxMin[2] = localBboxMin[2]
-        if (localBboxMax[0] > globalBboxMax[0]) globalBboxMax = localBboxMax
+        if (localBboxMax[0] > globalBboxMax[0]) globalBboxMax[0] = localBboxMax[0]
         if (localBboxMax[1] > globalBboxMax[1]) globalBboxMax[1] = localBboxMax[1]
         if (localBboxMax[2] > globalBboxMax[2]) globalBboxMax[2] = localBboxMax[2]
 
