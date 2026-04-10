@@ -1,6 +1,8 @@
-# BIM Viewer — Vérification IFC
+# BIM Viewer — Visionneuse IFC avec Analyse Spatiale
 
-Visualiseur de maquettes numériques IFC en 3D, directement dans le navigateur.
+Visionneuse de maquettes numériques IFC avec moteur d'analyse spatiale. Exploite la géométrie et les relations entre objets pour vérifier des intentions métier — au-delà des simples requêtes sur propriétés.
+
+> Voir les spécifications complètes : [`docs/SPEC.md`](docs/SPEC.md)
 
 ## Fonctionnalités
 
@@ -24,3 +26,11 @@ npm run dev
 ```bash
 npm run build
 ```
+
+## Licence
+
+- Le code source est sous licence [Apache 2.0](LICENSE)
+- Les spécifications et la documentation sont sous licence [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+
+[![License](https://img.shields.io/badge/Code-Apache%202.0-blue.svg)](LICENSE)
+[![License: CC BY-SA 4.0](https://img.shields.io/badge/Specs-CC%20BY--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-sa/4.0/)
