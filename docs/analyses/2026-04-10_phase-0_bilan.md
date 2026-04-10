@@ -144,6 +144,10 @@ Web Worker (parse IFC)  →  SceneGraph (base spatiale)  →  Three.js (rendu)
 
 ## Verdict
 
+Phase 0 : livrée. La fondation spatiale est correcte et bien pensée. Le risque principal avant d'aller plus loin est le pattern window.* pour les communications inter-composants — à refactoriser avant que l'arbre de composants ne grossisse. Le reste des manques sont normaux pour une Phase 0.
+
+La prochaine étape naturelle est Phase 1 (arbre des objets complet, filtres de visibilité, LOD) en parallèle avec le passage à Context API pour la gestion d'état.
+
 > **[Dev]** Accord sur le diagnostic. Les trois points "Haute" sont légitimes. L'ordre de traitement
 > pour Phase 1 : (1) window.* → Context API car c'est du fond architectural, (2) BVH car c'est le
 > prérequis pour que les analyses Phase 2 soient exploitables, (3) le reste.
