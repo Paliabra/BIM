@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.2 — Avril 2026  
+> Version 4.3 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -466,6 +466,34 @@ Organisées selon 3 axes de catégorisation :
 - Partageables entre utilisateurs (export/import)
 - Possibilité de contribution au catalogue commun
 
+### Structure d'une règle du catalogue
+
+Chaque règle du catalogue possède une structure minimale stable. Cette structure sera enrichie au fil du développement.
+
+```json
+{
+  "id": "nf-habitat-circulation-ratio",
+  "name": "Ratio de circulation — logements",
+  "description": "La surface de circulation ne doit pas dépasser un seuil de la surface habitable totale",
+  "category": { "norme": "NF Habitat", "metier": "Architecture", "usage": "Logement" },
+  "params": {
+    "seuil_ratio_circulation": { "default": 0.18, "unit": "ratio", "label": "Ratio max circulation" }
+  },
+  "source": "NF Habitat — Qualité d'usage",
+  "primitives": ["containment", "mesure"]
+}
+```
+
+Les paramètres (`params`) sont les **seuls éléments modifiables** lors d'un fork. La logique spatiale reste celle de la règle source.
+
+### Fork d'une règle du catalogue
+
+L'utilisateur peut à tout moment forker une règle du catalogue :
+1. Sélectionner une règle
+2. Modifier les paramètres (seuils, tolérances)
+3. Sauvegarder sous un nouveau nom dans ses règles personnelles
+4. La règle forkée reste liée à la règle source (traçabilité des modifications)
+
 ---
 
 ## 8. Éditeur de règles
@@ -762,10 +790,20 @@ tool findByIFCType(ifcType: string): IFCObject[]
 tool findByFunctionalType(functionalType: string): IFCObject[]
 tool querySceneGraph(filter: ObjectFilter): IFCObject[]
 
+// — Catalogue de règles métiers —
+tool searchRules(intent: string): Rule[]                // recherche sémantique dans le catalogue
+tool applyRule(
+  ruleId: string,
+  zone: ZoneId | BoundingBox,
+  overrides?: Partial<RuleParams>                       // modification des seuils à la volée
+): VerificationResult
+
 // — Ressources MCP (lecture directe, sans appel de fonction) —
 resource scenegraph://model/{modelId}        → état complet d'un modèle
 resource scenegraph://object/{objectId}      → données complètes d'un objet
 resource scenegraph://summary                → statistiques globales du projet
+resource bim-rules://catalogue/{category}   → règles du catalogue par catégorie
+resource bim-rules://rule/{ruleId}          → définition complète d'une règle
 
 // — Vision (opt-in, nécessite connexion — voir §2) —
 tool renderObjectView(objectId: string, angles: ('front'|'top'|'iso')[]): ImageData[]
@@ -993,22 +1031,39 @@ Après analyse géométrique et reconnaissance visuelle, chaque objet IFC est re
 
 #### Fonctionnement de l'agent
 
-L'agent ne traduit pas une règle littéralement. Il **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité.
+L'agent ne traduit pas une règle littéralement. Il **interprète l'intention réelle** de l'utilisateur, consulte le catalogue de règles métiers, génère des hypothèses et les traite — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité.
 
 Pour toute demande soumise, l'agent :
 
 1. Analyse l'intention réelle derrière la formulation (langage naturel)
-2. Consulte le SceneGraph enrichi (types IFC + reconnaissance visuelle + relations calculées)
-3. Identifie tous les cas plausibles, y compris les objets identifiés par reconnaissance IA
-4. Sélectionne la ou les primitives spatiales appropriées (§5)
-5. Exécute les analyses et présente un résultat complet
+2. **Consulte le catalogue** (`searchRules`) — cherche des règles existantes correspondant à l'intention
+3. Consulte le SceneGraph enrichi (types IFC + reconnaissance visuelle + relations calculées)
+4. **Évalue l'ambiguïté** : l'intention est-elle suffisamment précise pour générer des hypothèses ?
+   - Si **ambiguïté critique** → pose une question ciblée (une seule) avant de continuer
+   - Sinon → génère directement les hypothèses
+5. Présente les hypothèses avec, le cas échéant, les règles du catalogue correspondantes
+6. Sélectionne les primitives spatiales appropriées (§5) et exécute
 
-#### Deux modes d'exécution
+#### Trois modes d'interaction
 
-| Mode | Comportement |
-|---|---|
-| **Propose** | L'agent présente toutes les hypothèses identifiées et attend validation avant d'exécuter — l'utilisateur contrôle chaque décision |
-| **Execute** | L'agent exécute directement et présente les résultats avec les hypothèses traitées — comme un agent d'exécution de code |
+| Mode | Déclenchement | Comportement |
+|---|---|---|
+| **Ask** | Ambiguïté critique — deux interprétations radicalement différentes possibles | L'agent pose une question ciblée (une seule) pour lever l'ambiguïté avant de proposer |
+| **Propose** | Intention interprétable | L'agent présente les hypothèses identifiées et les règles du catalogue associées — attend validation avant d'exécuter |
+| **Execute** | Mode choisi par l'utilisateur ou intention non ambiguë | L'agent exécute directement et présente les résultats avec les hypothèses traitées |
+
+#### Interaction avec le catalogue de règles
+
+Quand `searchRules` retourne des résultats, l'agent les présente comme point de départ :
+
+```
+Agent : "J'ai trouvé 2 règles correspondantes dans le catalogue :
+  → [NF Habitat] Ratio de circulation ≤ 18% (logements)
+  → [Interne] Espaces résiduels < 3 m²
+  Appliquer l'une, les deux, adapter les seuils, ou travailler autrement ?"
+```
+
+L'utilisateur peut **sélectionner** une règle telle quelle, **modifier les paramètres** à la volée (les `overrides` sont passés à `applyRule`), ou ignorer le catalogue et laisser l'agent générer ses propres hypothèses.
 
 #### Flux complet
 
@@ -1017,15 +1072,22 @@ Demande utilisateur (langage naturel)
          ↓
    Interprétation de l'intention
          ↓
-   Consultation SceneGraph enrichi
-   (IFC + reconnaissance IA + relations calculées)
+   searchRules(intention) ──────────────────────────────────┐
+         ↓                                                   │
+   Règles trouvées ?                               Règles du catalogue
+   ├── Oui → les présenter comme hypothèses ←─────────────┘
+   └── Non → générer les hypothèses depuis le SceneGraph
          ↓
-   Génération des hypothèses
+   Ambiguïté critique ?
+   ├── Oui → [Mode Ask] : 1 question ciblée → réponse → retour étape précédente
+   └── Non ↓
          ↓
-     Mode Propose              Mode Execute
-  Validation user →                ↓
-         ↓               Exécution directe
-     Exécution
+     Mode Propose                    Mode Execute
+  Présente hypothèses                     ↓
+  + règles catalogue associées    Exécution directe
+  Validation user →
+         ↓
+     Exécution (applyRule ou primitives directes)
          ↓
   Résultats + hypothèses traitées + alertes
   Objets mis en exergue dans la vue 3D
@@ -1049,12 +1111,13 @@ L'agent traite explicitement les cas d'incertitude :
 ### 17.4 Interface IA
 
 - L'utilisateur pose des questions en **langage naturel**
-- L'IA dispose du SceneGraph enrichi (géométrie + reconnaissance visuelle + relations calculées) pour raisonner
-- Quatre usages :
+- L'IA dispose du SceneGraph enrichi (géométrie + reconnaissance visuelle + relations calculées) et du catalogue de règles métiers pour raisonner
+- Cinq usages :
   1. **Création de règles** (section 8 — Mode IA)
   2. **Interrogation directe** : *"Le garde-corps de la chambre 201 respecte-t-il la norme PMR ?"*
-  3. **Vérification intelligente** : interprétation, hypothèses, exécution sur le SceneGraph enrichi
+  3. **Vérification intelligente** : interprétation, consultation catalogue, hypothèses, exécution
   4. **Validation de la reconnaissance** : consulter, confirmer ou corriger les identifications visuelles
+  5. **Navigation dans le catalogue** : parcourir, sélectionner, forker et appliquer des règles existantes
 
 **Panneau de reconnaissance**
 
@@ -1147,3 +1210,8 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. MCP est le protocole qui standardise ce mécanisme. |
 | **Function calling** | Mécanisme par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Implémentation sous-jacente de MCP tool calls. |
 | **Composabilité** | Propriété du moteur garantie par le protocole MCP : tout LLM compatible peut être branché sans modifier le viewer, et toute mise à jour du viewer est transparente pour l'agent tant que le contrat MCP est respecté. |
+| **Catalogue de règles** | Base de règles métiers fournies et maintenues par l'équipe, organisées par norme / métier / usage. Chaque règle est sélectionnable, forkable et modifiable par l'utilisateur. Interrogeable par l'agent via `searchRules`. |
+| **Fork de règle** | Copie d'une règle du catalogue dans les règles personnelles de l'utilisateur, avec modification des paramètres. La règle forkée reste traçable vers sa règle source. |
+| **Mode Ask** | Mode d'interaction de l'agent où une ambiguïté critique est détectée — l'agent pose une question ciblée (une seule) avant de générer les hypothèses. Précurseur du mode Propose. |
+| **searchRules** | Outil MCP qui recherche dans le catalogue les règles correspondant sémantiquement à une intention exprimée en langage naturel. |
+| **applyRule** | Outil MCP qui exécute une règle du catalogue sur une zone donnée, avec possibilité de surcharger les paramètres à la volée (overrides). |
