@@ -1,6 +1,5 @@
-import { useReducer, useRef, useEffect, useCallback, type ReactNode } from 'react'
-import { SceneGraph } from './core/SceneGraph'
-import { ModelRegistry } from './core/ModelRegistry'
+import { useReducer, useEffect, useCallback, type ReactNode } from 'react'
+import { useBim } from './context/BimContext'
 import { Viewer3D } from './components/Viewer3D/Viewer3D'
 import { DisciplineModal } from './components/DisciplineModal'
 import { LoadingOverlay } from './components/LoadingOverlay'
@@ -11,61 +10,49 @@ import { ModelLayerPanel } from './components/ModelLayerPanel'
 import { SectionControls } from './components/SectionControls'
 import type { IfcSpatialTree, IfcModel } from './types/ifc-schema'
 import type { FromWorker } from './workers/worker-protocol'
-import type { SectionAxis, SectionPlane } from './renderer/SectionPlane'
-import type { CameraControls } from './renderer/CameraControls'
-import type { HighlightManager } from './renderer/HighlightManager'
-import type * as THREE from 'three'
-
-// ─── Scene refs type ─────────────────────────────────────────────────────────
-
-type SceneRefs = {
-  scene: THREE.Scene
-  camera: THREE.PerspectiveCamera
-  controls: CameraControls
-  sectionPlane: SectionPlane
-  highlightManager: HighlightManager
-}
+import type { SectionAxis } from './renderer/SectionPlane'
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
 interface LoadingState {
-  filename: string
-  percent: number
-  count: number
+  filename:   string
+  percent:    number
+  count:      number
   discipline: string
 }
 
+type InteractionMode = 'orbit' | 'select' | 'measure'
+
 interface AppState {
-  models: IfcModel[]
-  trees: IfcSpatialTree[]
-  selectedExpressId: number | null
-  selectedModelId: string | null
-  mode: 'orbit' | 'select'
-  fitTrigger: number
-  loading: LoadingState | null
-  pendingFile: File | null
-  /** Bumped on each DONE message — triggers CategoryPanel recompute */
-  sceneVersion: number
-  /** Bumped on each PROPERTIES message — triggers PropertiesPanel re-read */
-  propertiesVersion: number
-  /** Worker error message — null when no error */
-  workerError: string | null
+  models:             IfcModel[]
+  trees:              IfcSpatialTree[]
+  selectedExpressId:  number | null
+  selectedModelId:    string | null
+  mode:               InteractionMode
+  fitTrigger:         number
+  loading:            LoadingState | null
+  pendingFile:        File | null
+  /** Bumped on each DONE — triggers CategoryPanel recompute */
+  sceneVersion:       number
+  /** Bumped on each PROPERTIES — triggers PropertiesPanel re-read */
+  propertiesVersion:  number
+  workerError:        string | null
 }
 
 type AppAction =
-  | { type: 'FILE_PENDING'; file: File }
+  | { type: 'FILE_PENDING';        file: File }
   | { type: 'DISCIPLINE_CONFIRMED' }
   | { type: 'DISCIPLINE_CANCELLED' }
-  | { type: 'LOADING_PROGRESS'; percent: number; count: number; filename: string; discipline: string }
-  | { type: 'MODEL_DONE'; models: IfcModel[] }
-  | { type: 'TREE_RECEIVED'; tree: IfcSpatialTree }
-  | { type: 'OBJECT_PICKED'; expressId: number; modelId: string }
+  | { type: 'LOADING_PROGRESS';    percent: number; count: number; filename: string; discipline: string }
+  | { type: 'MODEL_DONE';          models: IfcModel[] }
+  | { type: 'TREE_RECEIVED';       tree: IfcSpatialTree }
+  | { type: 'OBJECT_PICKED';       expressId: number; modelId: string }
   | { type: 'PROPERTIES_RECEIVED' }
-  | { type: 'MODEL_VISIBILITY'; modelId: string; visible: boolean }
-  | { type: 'MODEL_DISCIPLINE'; modelId: string; discipline: string }
-  | { type: 'MODE_TOGGLE' }
+  | { type: 'MODEL_VISIBILITY';    modelId: string; visible: boolean }
+  | { type: 'MODEL_DISCIPLINE';    modelId: string; discipline: string }
+  | { type: 'SET_MODE';            mode: InteractionMode }
   | { type: 'FIT' }
-  | { type: 'WORKER_ERROR'; message: string }
+  | { type: 'WORKER_ERROR';        message: string }
   | { type: 'DISMISS_ERROR' }
 
 function reducer(state: AppState, action: AppAction): AppState {
@@ -81,9 +68,9 @@ function reducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         loading: {
-          filename: action.filename,
-          percent: action.percent,
-          count: action.count,
+          filename:   action.filename,
+          percent:    action.percent,
+          count:      action.count,
           discipline: action.discipline,
         },
       }
@@ -91,9 +78,9 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'MODEL_DONE':
       return {
         ...state,
-        loading: null,
-        models: action.models,
-        fitTrigger: state.fitTrigger + 1,
+        loading:      null,
+        models:       action.models,
+        fitTrigger:   state.fitTrigger + 1,
         sceneVersion: state.sceneVersion + 1,
       }
 
@@ -137,8 +124,8 @@ function reducer(state: AppState, action: AppAction): AppState {
         ),
       }
 
-    case 'MODE_TOGGLE':
-      return { ...state, mode: state.mode === 'orbit' ? 'select' : 'orbit' }
+    case 'SET_MODE':
+      return { ...state, mode: action.mode }
 
     case 'FIT':
       return { ...state, fitTrigger: state.fitTrigger + 1 }
@@ -149,31 +136,29 @@ function reducer(state: AppState, action: AppAction): AppState {
 }
 
 const initialState: AppState = {
-  models: [],
-  trees: [],
+  models:            [],
+  trees:             [],
   selectedExpressId: null,
-  selectedModelId: null,
-  mode: 'orbit',
-  fitTrigger: 0,
-  loading: null,
-  pendingFile: null,
-  sceneVersion: 0,
+  selectedModelId:   null,
+  mode:              'orbit',
+  fitTrigger:        0,
+  loading:           null,
+  pendingFile:       null,
+  sceneVersion:      0,
   propertiesVersion: 0,
-  workerError: null,
+  workerError:       null,
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 export function App() {
+  const { graph, registry, getRenderer } = useBim()
   const [state, dispatch] = useReducer(reducer, initialState)
 
-  // Stable class instances — not React state (mutations don't need re-renders)
-  const graphRef = useRef(new SceneGraph())
-  const registryRef = useRef(new ModelRegistry())
-  const workerRef = useRef<Worker | null>(null)
-  const sceneRefsRef = useRef<SceneRefs | null>(null)
+  // Worker singleton — created once, lives for the app lifetime
+  const workerRef = { current: null as Worker | null }
 
-  // ── Worker lifecycle ──────────────────────────────────────────────────────
+  // ── Worker lifecycle ────────────────────────────────────────────────────────
   useEffect(() => {
     const worker = new Worker(
       new URL('./workers/ifc.worker.ts', import.meta.url),
@@ -184,19 +169,18 @@ export function App() {
     worker.onmessage = (e: MessageEvent<FromWorker>) => {
       const msg = e.data
 
-      // Forward geometry/relations/properties to Viewer3D's scene sync
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(window as any).__bim_handleWorkerMessage?.(msg)
+      // Forward geometry/relations/properties to useSceneSync via context
+      getRenderer()?.handleWorkerMessage(msg)
 
       switch (msg.type) {
         case 'PROGRESS': {
-          const model = registryRef.current.get(msg.modelId)
+          const model = registry.get(msg.modelId)
           if (model) {
             dispatch({
-              type: 'LOADING_PROGRESS',
-              percent: msg.percent,
-              count: msg.count,
-              filename: model.filename,
+              type:       'LOADING_PROGRESS',
+              percent:    msg.percent,
+              count:      msg.count,
+              filename:   model.filename,
               discipline: model.discipline,
             })
           }
@@ -207,9 +191,9 @@ export function App() {
           break
         }
         case 'DONE': {
-          registryRef.current.setObjectCount(msg.modelId, msg.totalObjects)
-          registryRef.current.setBbox(msg.modelId, msg.bbox)
-          dispatch({ type: 'MODEL_DONE', models: registryRef.current.all() })
+          registry.setObjectCount(msg.modelId, msg.totalObjects)
+          registry.setBbox(msg.modelId, msg.bbox)
+          dispatch({ type: 'MODEL_DONE', models: registry.all() })
           break
         }
         case 'PROPERTIES': {
@@ -217,10 +201,10 @@ export function App() {
           break
         }
         case 'ERROR': {
-          const model = registryRef.current.get(msg.modelId)
+          const model = registry.get(msg.modelId)
           const label = model ? `"${model.filename}"` : `modèle ${msg.modelId.slice(0, 8)}`
           dispatch({
-            type: 'WORKER_ERROR',
+            type:    'WORKER_ERROR',
             message: `Erreur lors du chargement de ${label} : ${msg.message}`,
           })
           break
@@ -229,25 +213,29 @@ export function App() {
     }
 
     return () => worker.terminate()
+    // graph and registry are stable — they come from BimProvider refs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const target = e.target
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
       if (e.key === 'f' || e.key === 'F') dispatch({ type: 'FIT' })
-      if (e.key === 'Escape') dispatch({ type: 'OBJECT_PICKED', expressId: -1, modelId: '' })
-      if (e.key === ' ') {
-        e.preventDefault()
-        dispatch({ type: 'MODE_TOGGLE' })
+      if (e.key === 'Escape') {
+        dispatch({ type: 'OBJECT_PICKED', expressId: -1, modelId: '' })
+        dispatch({ type: 'SET_MODE', mode: 'orbit' })
       }
+      if (e.key === 'o' || e.key === 'O') dispatch({ type: 'SET_MODE', mode: 'orbit' })
+      if (e.key === 's' || e.key === 'S') dispatch({ type: 'SET_MODE', mode: 'select' })
+      if (e.key === 'm' || e.key === 'M') dispatch({ type: 'SET_MODE', mode: 'measure' })
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [])
 
-  // ── Drag-and-drop ─────────────────────────────────────────────────────────
+  // ── Drag-and-drop ───────────────────────────────────────────────────────────
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
@@ -261,83 +249,71 @@ export function App() {
     if (file) dispatch({ type: 'FILE_PENDING', file })
   }, [])
 
-  // ── File input (button alternative to drag-and-drop) ─────────────────────
+  // ── File input ──────────────────────────────────────────────────────────────
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) dispatch({ type: 'FILE_PENDING', file })
-    e.target.value = '' // reset so same file can be dropped again
+    e.target.value = ''
   }, [])
 
-  // ── Discipline confirmed → start parsing ──────────────────────────────────
+  // ── Discipline confirmed → start parsing ────────────────────────────────────
   const handleDisciplineConfirmed = useCallback(
     (discipline: string) => {
       const file = state.pendingFile
       if (!file || !workerRef.current) return
 
-      const modelId = registryRef.current.register(file.name, discipline)
+      const modelId = registry.register(file.name, discipline)
       dispatch({ type: 'DISCIPLINE_CONFIRMED' })
 
       file.arrayBuffer().then((buffer) => {
         workerRef.current!.postMessage({ type: 'LOAD', buffer, modelId }, [buffer])
       })
     },
-    [state.pendingFile],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pendingFile, registry],
   )
 
-  // ── Object picked ─────────────────────────────────────────────────────────
+  // ── Object picked ───────────────────────────────────────────────────────────
   const handleObjectPicked = useCallback((expressId: number, modelId: string) => {
     dispatch({ type: 'OBJECT_PICKED', expressId, modelId })
   }, [])
 
-  // ── Properties requested ──────────────────────────────────────────────────
+  // ── Properties requested ────────────────────────────────────────────────────
   const handleRequestProperties = useCallback((expressId: number, modelId: string) => {
     workerRef.current?.postMessage({ type: 'GET_PROPERTIES', expressId, modelId })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Model visibility ──────────────────────────────────────────────────────
+  // ── Model visibility ────────────────────────────────────────────────────────
   const handleVisibilityChange = useCallback((modelId: string, visible: boolean) => {
-    registryRef.current.setVisibility(modelId, visible)
+    registry.setVisibility(modelId, visible)
     dispatch({ type: 'MODEL_VISIBILITY', modelId, visible })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_setModelVisibility?.(modelId, visible)
-  }, [])
+    getRenderer()?.setModelVisibility(modelId, visible)
+  }, [registry, getRenderer])
 
-  // ── Model discipline ──────────────────────────────────────────────────────
+  // ── Model discipline ────────────────────────────────────────────────────────
   const handleDisciplineChange = useCallback((modelId: string, discipline: string) => {
-    registryRef.current.setDiscipline(modelId, discipline)
+    registry.setDiscipline(modelId, discipline)
     dispatch({ type: 'MODEL_DISCIPLINE', modelId, discipline })
-  }, [])
+  }, [registry])
 
-  // ── Section plane ─────────────────────────────────────────────────────────
-  const handleSectionChange = useCallback((axis: SectionAxis | null, position: number) => {
-    const sp = sceneRefsRef.current?.sectionPlane
-    if (!sp) return
-    if (axis === null) {
-      sp.disable()
-    } else {
-      sp.setAxis(axis)
-      sp.setPosition(position)
-      if (!sp.active) sp.enable()
-    }
-    // Update clipping planes on all existing mesh materials
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_updateSectionPlane?.(sp.active ? sp.plane : null)
-  }, [])
+  // ── Section plane ───────────────────────────────────────────────────────────
+  const handleSectionChange = useCallback(
+    (axis: SectionAxis | null, position: number) => {
+      getRenderer()?.setSectionPlane(axis, position)
+    },
+    [getRenderer],
+  )
 
-  // ── Scene ready ───────────────────────────────────────────────────────────
-  const handleSceneReady = useCallback((refs: SceneRefs) => {
-    sceneRefsRef.current = refs
-  }, [])
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div
       className="w-screen h-screen bg-surface-900 flex flex-col overflow-hidden"
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      {/* ── Top bar ───────────────────────────────────────────────────────── */}
-      <header className="h-10 bg-surface-800 border-b border-surface-700 flex items-center px-4 gap-3 shrink-0 z-10">
+      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
+      <header className="h-10 bg-surface-800 border-b border-surface-700 flex items-center px-4 gap-2 shrink-0 z-10">
         <span className="text-white font-semibold text-sm tracking-tight select-none">
           BIM Viewer
         </span>
@@ -366,19 +342,30 @@ export function App() {
           </span>
         )}
 
-        {/* Interaction mode toggle */}
-        <button
-          onClick={() => dispatch({ type: 'MODE_TOGGLE' })}
-          title="Basculer orbit / sélection (Espace)"
-          className={[
-            'px-3 py-1 rounded text-xs font-medium transition-colors',
-            state.mode === 'select'
-              ? 'bg-accent text-white'
-              : 'bg-surface-600 text-surface-300 hover:text-white',
-          ].join(' ')}
-        >
-          {state.mode === 'orbit' ? '↻ Orbite' : '⊹ Sélection'}
-        </button>
+        {/* Mode buttons */}
+        <div className="flex gap-1">
+          {(
+            [
+              { mode: 'orbit',   label: '↻ Orbite',  key: 'O' },
+              { mode: 'select',  label: '⊹ Sélect.',  key: 'S' },
+              { mode: 'measure', label: '⟷ Mesure',  key: 'M' },
+            ] as const
+          ).map(({ mode, label, key }) => (
+            <button
+              key={mode}
+              onClick={() => dispatch({ type: 'SET_MODE', mode })}
+              title={`${label} (${key})`}
+              className={[
+                'px-3 py-1 rounded text-xs font-medium transition-colors',
+                state.mode === mode
+                  ? 'bg-accent text-white'
+                  : 'bg-surface-600 text-surface-300 hover:text-white',
+              ].join(' ')}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         {/* Fit button */}
         <button
@@ -390,7 +377,7 @@ export function App() {
         </button>
       </header>
 
-      {/* ── Error banner ─────────────────────────────────────────────────── */}
+      {/* ── Error banner ────────────────────────────────────────────────────── */}
       {state.workerError && (
         <div className="shrink-0 flex items-start gap-3 px-4 py-2 bg-red-900/80 border-b border-red-700 text-red-200 text-xs">
           <span className="shrink-0 text-red-400">⚠</span>
@@ -405,7 +392,7 @@ export function App() {
         </div>
       )}
 
-      {/* ── Main content ──────────────────────────────────────────────────── */}
+      {/* ── Main content ────────────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0">
 
         {/* Left sidebar */}
@@ -414,20 +401,17 @@ export function App() {
             <ModelTree trees={state.trees} />
           </SideSection>
           <SideSection title="Catégories" grow>
-            <CategoryPanel graph={graphRef.current} version={state.sceneVersion} />
+            <CategoryPanel graph={graph} version={state.sceneVersion} />
           </SideSection>
         </aside>
 
         {/* 3D Viewport */}
         <div className="flex-1 relative min-w-0">
           <Viewer3D
-            graph={graphRef.current}
-            onWorkerMessage={() => {}}
             onObjectPicked={handleObjectPicked}
             mode={state.mode}
             selectedExpressId={state.selectedExpressId}
             fitTrigger={state.fitTrigger}
-            onSceneReady={handleSceneReady}
           />
 
           {/* Loading overlay */}
@@ -440,7 +424,7 @@ export function App() {
             />
           )}
 
-          {/* Drop zone hint — shown when no models loaded */}
+          {/* Drop zone hint */}
           {state.models.length === 0 && !state.loading && (
             <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none">
               <div className="text-center">
@@ -460,7 +444,7 @@ export function App() {
             <SideSection title="Modèles">
               <ModelLayerPanel
                 models={state.models}
-                registry={registryRef.current}
+                registry={registry}
                 onVisibilityChange={handleVisibilityChange}
                 onDisciplineChange={handleDisciplineChange}
               />
@@ -470,7 +454,7 @@ export function App() {
             <PropertiesPanel
               expressId={state.selectedExpressId}
               modelId={state.selectedModelId}
-              graph={graphRef.current}
+              graph={graph}
               dataVersion={state.propertiesVersion}
               onRequestProperties={handleRequestProperties}
             />
@@ -478,7 +462,7 @@ export function App() {
           {state.models.length > 0 && (
             <SideSection title="Plan de coupe">
               <SectionControls
-                graph={graphRef.current}
+                graph={graph}
                 onSectionChange={handleSectionChange}
               />
             </SideSection>
@@ -486,11 +470,11 @@ export function App() {
         </aside>
       </div>
 
-      {/* ── Discipline modal ───────────────────────────────────────────────── */}
+      {/* ── Discipline modal ─────────────────────────────────────────────────── */}
       {state.pendingFile && (
         <DisciplineModal
           filename={state.pendingFile.name}
-          existingCustom={registryRef.current.customDisciplines}
+          existingCustom={registry.customDisciplines}
           onConfirm={handleDisciplineConfirmed}
           onCancel={() => dispatch({ type: 'DISCIPLINE_CANCELLED' })}
         />

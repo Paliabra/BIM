@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import * as THREE from 'three'
 import {
   initThreeScene,
@@ -10,50 +10,39 @@ import { CameraControls } from '../../renderer/CameraControls'
 import { ObjectPicker } from '../../renderer/ObjectPicker'
 import { HighlightManager } from '../../renderer/HighlightManager'
 import { SectionPlane } from '../../renderer/SectionPlane'
+import { MeasureTool } from '../../renderer/MeasureTool'
+import type { MeasureResult } from '../../renderer/MeasureTool'
 import { useSceneSync } from './useSceneSync'
-import type { SceneGraph } from '../../core/SceneGraph'
-import type { FromWorker } from '../../workers/worker-protocol'
+import { useBim } from '../../context/BimContext'
 
 interface Viewer3DProps {
-  graph: SceneGraph
-  /** Called when worker sends a message (OBJECT, RELATIONS, TREE, etc.) */
-  onWorkerMessage: (msg: FromWorker) => void
-  /** Called when user clicks an IFC object */
+  /** Called when user clicks an IFC object (select mode). */
   onObjectPicked: (expressId: number, modelId: string) => void
-  /** Current interaction mode */
-  mode: 'orbit' | 'select'
-  /** expressId of currently selected object (for highlight) */
+  /** Current interaction mode. */
+  mode: 'orbit' | 'select' | 'measure'
+  /** expressId of currently selected object (for highlight). */
   selectedExpressId: number | null
-  /** Fit camera to the scene — triggered externally */
+  /** Incremented externally to trigger a camera fit. */
   fitTrigger: number
-  /** Expose scene refs to parent (for section plane, etc.) */
-  onSceneReady?: (refs: {
-    scene: THREE.Scene
-    camera: THREE.PerspectiveCamera
-    controls: CameraControls
-    sectionPlane: SectionPlane
-    highlightManager: HighlightManager
-  }) => void
 }
 
 /**
- * The 3D viewport component.
- * Owns: Three.js scene, camera controls, object picker, highlights, section plane.
- * Delegates: IFC parsing (Worker), scene data (SceneGraph).
+ * The 3D viewport.
+ * Owns: Three.js scene, camera, controls, object picker, highlights, section plane, measure tool.
+ * Communicates upstream via: onObjectPicked callback + BimContext renderer API.
  */
 export function Viewer3D({
-  graph,
-  onWorkerMessage,
   onObjectPicked,
   mode,
   selectedExpressId,
   fitTrigger,
-  onSceneReady,
 }: Viewer3DProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const { graph, registerRenderer } = useBim()
+
+  const canvasRef  = useRef<HTMLCanvasElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
-  // Three.js refs (initialised once on mount)
+  // Three.js refs — initialised once on mount
   const sceneRef     = useRef<THREE.Scene | null>(null)
   const cameraRef    = useRef<THREE.PerspectiveCamera | null>(null)
   const rendererRef  = useRef<THREE.WebGLRenderer | null>(null)
@@ -61,36 +50,74 @@ export function Viewer3D({
   const pickerRef    = useRef<ObjectPicker | null>(null)
   const highlightRef = useRef<HighlightManager | null>(null)
   const sectionRef   = useRef<SectionPlane | null>(null)
+  const measureRef   = useRef<MeasureTool | null>(null)
   const axesRef      = useRef<HTMLCanvasElement | null>(null)
-  const modeRef      = useRef<'orbit' | 'select'>(mode)
+  const modeRef      = useRef<'orbit' | 'select' | 'measure'>(mode)
 
-  // Keep modeRef current without re-initialising the scene
-  useEffect(() => { modeRef.current = mode }, [mode])
+  // Distance measurement result — shown as overlay
+  const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
 
-  const { handleWorkerMessage, setModelVisibility, setTypeVisibility, updateSectionPlane, removeModel } =
+  // Keep modeRef current on every render without re-running the scene init effect
+  useEffect(() => {
+    modeRef.current = mode
+    if (mode === 'measure') {
+      measureRef.current?.enable()
+    } else {
+      measureRef.current?.disable()
+    }
+  }, [mode])
+
+  const { handleWorkerMessage, setModelVisibility, setTypeVisibility, setObjectsVisibility, updateSectionPlane, removeModel } =
     useSceneSync(sceneRef.current, graph, sectionRef.current)
 
-  // Expose these helpers for external use (ModelLayerPanel, CategoryPanel)
-  // We store them on window temporarily — proper state lifting done in App
-  useEffect(() => {
-    // Expose via ref-like global for sibling components (avoids prop drilling for Phase 0)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_setModelVisibility = setModelVisibility
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_setTypeVisibility = setTypeVisibility
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_removeModel = removeModel
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_updateSectionPlane = updateSectionPlane
-  }, [setModelVisibility, setTypeVisibility, removeModel, updateSectionPlane])
+  // Stable ref so the renderer registration closure always calls the latest version
+  const sceneSyncRef = useRef(handleWorkerMessage)
+  sceneSyncRef.current = handleWorkerMessage
 
-  // ── Initialise Three.js on mount ─────────────────────────────────────────────
+  // ── Register the renderer API in BimContext ────────────────────────────────
+  // Done in a separate effect so registration re-runs if any callback changes.
+  // setObjectsVisibility has no deps so it's always stable.
   useEffect(() => {
-    const canvas = canvasRef.current
+    registerRenderer({
+      handleWorkerMessage: (msg) => sceneSyncRef.current(msg),
+      setModelVisibility,
+      setTypeVisibility,
+      setObjectsVisibility,
+      removeModel,
+      setSectionPlane: (axis, position) => {
+        const sp = sectionRef.current
+        if (!sp) return
+        if (axis === null) {
+          sp.disable()
+          updateSectionPlane(null)
+        } else {
+          sp.setAxis(axis)
+          sp.setPosition(position)
+          if (!sp.active) sp.enable()
+          updateSectionPlane(sp.plane)
+        }
+      },
+      setMeasureMode: (active) => {
+        if (active) measureRef.current?.enable()
+        else measureRef.current?.disable()
+      },
+    })
+  }, [
+    registerRenderer,
+    setModelVisibility,
+    setTypeVisibility,
+    setObjectsVisibility,
+    removeModel,
+    updateSectionPlane,
+  ])
+
+  // ── Initialise Three.js on mount ──────────────────────────────────────────
+  useEffect(() => {
+    const canvas  = canvasRef.current
     const wrapper = wrapperRef.current
     if (!canvas || !wrapper) return
 
-    const { renderer, scene, camera, grid, axesCanvas } = initThreeScene(canvas)
+    const { renderer, scene, camera, axesCanvas } = initThreeScene(canvas)
     sceneRef.current    = scene
     cameraRef.current   = camera
     rendererRef.current = renderer
@@ -100,17 +127,16 @@ export function Viewer3D({
     const picker       = new ObjectPicker(camera, scene, canvas)
     const highlight    = new HighlightManager(scene)
     const sectionPlane = new SectionPlane(renderer)
+    const measure      = new MeasureTool(scene, camera, canvas, setMeasureResult)
 
     controlsRef.current  = controls
     pickerRef.current    = picker
     highlightRef.current = highlight
     sectionRef.current   = sectionPlane
+    measureRef.current   = measure
 
-    // Position axes gizmo
-    wrapper.style.position = 'relative'
     wrapper.appendChild(axesCanvas)
 
-    // Resize observer
     const ro = new ResizeObserver(() => {
       const { clientWidth: w, clientHeight: h } = wrapper
       resizeRenderer(renderer, camera, w, h)
@@ -118,33 +144,23 @@ export function Viewer3D({
     ro.observe(wrapper)
     resizeRenderer(renderer, camera, wrapper.clientWidth, wrapper.clientHeight)
 
-    // Grid y-position — set after models load via fitToBbox
-    grid.position.y = 0
-
-    // Render loop
     const stopLoop = startRenderLoop(renderer, scene, camera, () => {
       controls.update()
       if (axesRef.current) drawAxesGizmo(axesRef.current, camera)
     })
 
-    onSceneReady?.({ scene, camera, controls, sectionPlane, highlightManager: highlight })
-
     return () => {
       stopLoop()
       ro.disconnect()
       controls.dispose()
+      measure.dispose()
       renderer.dispose()
       axesCanvas.remove()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Re-sync useSceneSync when refs are ready ─────────────────────────────────
-  // useSceneSync uses scene/graph/sectionPlane from closure — we need to bridge
-  // the initial render where refs aren't set yet.
-  // Solution: expose handleWorkerMessage via onWorkerMessage callback (parent does it)
-
-  // ── Fit camera trigger ───────────────────────────────────────────────────────
+  // ── Fit camera ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (fitTrigger === 0) return
     const controls = controlsRef.current
@@ -152,61 +168,66 @@ export function Viewer3D({
     const bbox = graph.globalBbox()
     if (!bbox.isEmpty()) {
       controls.fitToBbox(bbox)
-      // Move grid to model floor
       const sceneGrid = sceneRef.current?.children.find((c) => c instanceof THREE.GridHelper)
       if (sceneGrid) sceneGrid.position.y = bbox.min.y
     }
   }, [fitTrigger, graph])
 
-  // ── Selection highlight ──────────────────────────────────────────────────────
+  // ── Selection highlight ───────────────────────────────────────────────────
   useEffect(() => {
     const h = highlightRef.current
     if (!h) return
     h.clearAll()
-    if (selectedExpressId !== null) {
-      h.highlight(selectedExpressId, 'selected')
-    }
+    if (selectedExpressId !== null) h.highlight(selectedExpressId, 'selected')
   }, [selectedExpressId])
 
-  // ── Click handler (canvas) ───────────────────────────────────────────────────
+  // ── Click handler ─────────────────────────────────────────────────────────
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      // Measure mode: let MeasureTool handle the click first
+      if (modeRef.current === 'measure') {
+        measureRef.current?.handleClick(e.nativeEvent)
+        return
+      }
       if (modeRef.current !== 'select') return
-      const picker = pickerRef.current
-      if (!picker) return
-      const result = picker.pick(e.nativeEvent)
+      const result = pickerRef.current?.pick(e.nativeEvent)
       if (result) {
         onObjectPicked(result.expressId, result.modelId)
       } else {
-        onObjectPicked(-1, '') // deselect
+        onObjectPicked(-1, '')
       }
     },
     [onObjectPicked],
   )
 
-  // ── Forward worker messages to useSceneSync ──────────────────────────────────
-  // We can't call handleWorkerMessage directly here (stale closure from useSceneSync).
-  // Instead we bridge via the ref once scene is ready.
-  const sceneSyncRef = useRef(handleWorkerMessage)
-  sceneSyncRef.current = handleWorkerMessage
-
-  useEffect(() => {
-    // Expose the message handler so the parent can forward Worker messages
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_handleWorkerMessage = (msg: FromWorker) => {
-      sceneSyncRef.current(msg)
-      onWorkerMessage(msg)
-    }
-  }, [onWorkerMessage])
+  // ── Cursor style ──────────────────────────────────────────────────────────
+  const cursor =
+    mode === 'measure' ? 'crosshair'
+    : mode === 'select' ? 'crosshair'
+    : 'grab'
 
   return (
     <div ref={wrapperRef} className="relative w-full h-full bg-surface-900 overflow-hidden">
       <canvas
         ref={canvasRef}
         className="w-full h-full block"
-        style={{ cursor: mode === 'select' ? 'crosshair' : 'grab' }}
+        style={{ cursor }}
         onClick={handleClick}
       />
+
+      {/* ── Measure overlay ─────────────────────────────────────────────── */}
+      {measureResult && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface-800/90 backdrop-blur border border-surface-600 rounded-lg px-4 py-2 text-center pointer-events-none select-none">
+          <div className="text-accent font-mono text-lg font-semibold">
+            {measureResult.distance.toFixed(3)} m
+          </div>
+          <div className="text-surface-400 text-xs mt-0.5">
+            {measureResult.from.x.toFixed(2)},{measureResult.from.y.toFixed(2)},{measureResult.from.z.toFixed(2)}
+            {' → '}
+            {measureResult.to.x.toFixed(2)},{measureResult.to.y.toFixed(2)},{measureResult.to.z.toFixed(2)}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
