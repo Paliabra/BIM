@@ -41,6 +41,15 @@ Web Worker (parse IFC)  →  SceneGraph (base spatiale)  →  Three.js (rendu)
 
 ## Ce qui est à corriger / compléter
 
+|Priorité	| Problème	| Impact |
+|---------|--------|-------|
+|Haute	|window.__bim_* globaux pour la comms inter-composants	|Anti-pattern, rend les tests impossibles → Context API|
+|Haute	|Pas d'UI sur les erreurs Worker (silencieuses)	|L'utilisateur ne voit rien si le fichier est malformé|
+|Haute	|Index spatial O(n) linéaire — plafonne à ~10k objets	|BVH requis avant Phase 2|
+|Moyenne	|Fuite mémoire : Worker garde tous les API en mémoire après suppression	|Ajouter cleanup sur suppression de modèle|
+|Moyenne	|Bug mineur dans le calcul du bbox global dans le Worker (assignation incohérente)||	
+|Faible	|Pas de tests directs sur SpatialIndex, pas de tests d'intégration	||
+
 ### Haute — `window.__bim_*` globaux pour la comms inter-composants
 
 > **[Dev]** Confirmé anti-pattern. Origine : Viewer3D initialise Three.js dans un `useEffect` (mount),
