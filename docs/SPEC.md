@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 3.0 — Avril 2026  
+> Version 4.1 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -26,6 +26,11 @@
 15. [Résultats & Exports](#15-résultats--exports)
 16. [Historique des analyses](#16-historique-des-analyses)
 17. [Couche IA](#17-couche-ia)
+    - [17.0 Le moteur comme environnement d'outils pour l'IA](#170-le-moteur-comme-environnement-doutils-pour-lia)
+    - [17.1 Paradigme — l'IA comme expert](#171-paradigme--lia-comme-expert)
+    - [17.2 Reconnaissance visuelle](#172-reconnaissance-visuelle)
+    - [17.3 Agent de Vérification Intelligent](#173-agent-de-vérification-intelligent)
+    - [17.4 Interface IA](#174-interface-ia)
 18. [Contraintes de performance](#18-contraintes-de-performance)
 19. [Accès & Sauvegarde](#19-accès--sauvegarde)
 20. [Licences](#20-licences)
@@ -134,18 +139,50 @@ L'intention réelle n'est pas "trouver les équipements dans un espace nommé ch
 
 **Étape 1 — Détection automatique des équipements de maintenance**
 
-Le moteur identifie automatiquement tous les objets nécessitant une maintenance selon leur type IFC, indépendamment de leur localisation dans le modèle :
+La détection combine deux sources complémentaires pour produire un **score de confiance composite** :
 
-| Entité IFC | Équipement |
-|---|---|
-| `IfcBoiler` | Chaudière, générateur |
-| `IfcPump` | Pompe |
-| `IfcHeatExchanger` | Échangeur thermique |
-| `IfcCompressor` | Compresseur |
-| `IfcUnitaryEquipment` | Équipement technique unitaire |
-| `IfcFlowMovingDevice` | Équipements fluides actifs |
+**Source A — Classification IFC**
 
-Pour les objets de type ambigu, l'agent demande validation à l'utilisateur.
+Le moteur identifie automatiquement tous les objets selon leur type IFC déclaré :
+
+| Entité IFC | Équipement | Confiance type |
+|---|---|---|
+| `IfcBoiler` | Chaudière, générateur | Haute |
+| `IfcPump` | Pompe | Haute |
+| `IfcHeatExchanger` | Échangeur thermique | Haute |
+| `IfcCompressor` | Compresseur | Haute |
+| `IfcUnitaryEquipment` | Équipement technique unitaire | Haute |
+| `IfcFlowMovingDevice` | Équipements fluides actifs | Haute |
+| `IfcBuildingElementProxy` | Objet sans classification | Faible |
+| `IfcFlowSegment` | Peut être équipement ou tuyauterie | Moyenne |
+
+**Source B — Reconnaissance visuelle IA (couche §17.2)**
+
+La couche IA analyse la géométrie rendue en 3D exactement comme un ingénieur regarde la maquette. Elle peut identifier un équipement de maintenance par sa forme, ses dimensions, son contexte spatial et ses relations topologiques avec les objets voisins — **indépendamment de sa classification IFC**.
+
+```
+Rendu 3D de l'objet (+ voisins visibles)
+        ↓
+  Agent IA — vision
+        ↓
+"Chaudière murale, puissance estimée ~25 kW"  →  confiance: 0.93
+        ↓
+  Score composite = f(IFC_type, IA_vision, contexte_spatial)
+```
+
+**Confiance composite**
+
+```
+score = α × confiance_IFC + β × confiance_IA + γ × cohérence_spatiale
+```
+
+- `confiance_IFC` — qualité de la classification IFC déclarée (0 si non classifié, 1 si type précis)
+- `confiance_IA` — confiance du modèle de vision sur le type fonctionnel reconnu
+- `cohérence_spatiale` — accord entre le type reconnu et le contexte (ex: équipement dans une pièce technique = +)
+- Seuil de validation automatique : configurable (défaut 0.80)
+- En dessous du seuil : l'objet est présenté à l'utilisateur pour validation
+
+Pour les objets sous le seuil de confiance, l'agent présente sa proposition et demande validation à l'utilisateur (voir §17.2).
 
 **Étape 2 — Vérification du dégagement de 0,50 m**
 
@@ -204,11 +241,27 @@ L'application peut être déployée en **web (navigateur)**, en **application de
 - Aucune donnée du modèle IFC ne transite vers un serveur externe
 - L'application doit fonctionner **sans connexion internet** une fois chargée
 
+### Fonctionnalité connectée optionnelle — Reconnaissance visuelle IA
+
+La **reconnaissance visuelle IA** (§17.2) constitue la seule exception au principe de traitement 100% local. Elle envoie des captures 3D anonymisées (pas le fichier IFC brut) à un fournisseur de vision IA :
+
+- **Opt-in explicite** — la fonctionnalité est désactivée par défaut. L'utilisateur l'active délibérément et est informé de ce qui est transmis
+- **Données transmises** : captures 3D rendues (images PNG des objets dans leur contexte), jamais le fichier IFC source
+- **Fournisseur actuel** : API Claude Vision (Anthropic)
+- **Évolution prévue** : intégration d'un modèle local (type Gemma 4 ou équivalent) lorsque les capacités des modèles embarqués le permettront — la fonctionnalité deviendra alors 100% locale
+- **Sans connexion** : toutes les autres fonctions (parsing, analyse spatiale, moteur de règles, agent de vérification) restent pleinement opérationnelles hors ligne
+
 ### Versions IFC supportées
 
 - **IFC 2x3** — version la plus répandue dans les fichiers réels
 - **IFC 4.3** — version de référence actuelle buildingSMART
 - La gestion des deux versions est transparente pour l'utilisateur
+
+### Conçu pour le tool use
+
+Le moteur géométrique est conçu pour être **interrogeable par un agent IA via des appels d'outils** (function calling / tool use). C'est la même architecture que celle utilisée par les assistants IA modernes pour interagir avec des systèmes externes — Bash, navigateur web, API. Si ces outils sont les primitives spatiales du moteur BIM, un LLM peut réaliser n'importe quelle vérification architecturale ou technique sans nécessiter d'entraînement BIM spécifique.
+
+L'interface de tool use est un contrat fonctionnel stable entre le moteur et tout agent IA externe. Elle évolue indépendamment de l'interface utilisateur.
 
 ### Indépendance technologique
 
@@ -621,79 +674,383 @@ Le fichier IFC source n'est jamais altéré.
 
 ## 17. Couche IA
 
-### Graphe d'objets enrichi
+La couche IA du moteur n'est pas un assistant conversationnel greffé sur un viewer. C'est un **agent expert** qui raisonne sur le modèle exactement comme le ferait un ingénieur ou un architecte expérimenté — il "voit" la maquette, comprend les objets par leur forme et leur contexte, et utilise les outils du moteur géométrique comme ses instruments de mesure.
 
-Après analyse géométrique, chaque objet IFC est représenté comme un nœud enrichi :
+---
+
+### 17.0 Le moteur comme environnement d'outils pour l'IA
+
+#### Principe fondamental
+
+Un agent IA moderne (Claude, GPT-4, Gemini…) peut raisonner, planifier et agir en appelant des outils externes. Donner à cet agent `Bash`, `Read`, `Grep` — et il devient capable de faire de l'ingénierie logicielle. Donner à ce même agent les primitives spatiales du moteur BIM — et il devient capable de vérifier n'importe quelle intention architecturale ou technique sur n'importe quelle maquette.
+
+Il n'y a pas de différence de nature. C'est le même paradigme.
+
+```
+Agent IA reçoit les outils BIM :
+    → queryRadius("chaudière_01", 0.60)
+    → getObjectRelations("chaudière_01")
+    → renderObjectView("chaudière_01", ["front", "top"])
+    → queryContained(zone_chaufferie)
+    → measureClearance("chaudière_01", "devant")
+    → raisonne sur les résultats
+    → produit : conformité, anomalies, recommandations
+```
+
+Aucun entraînement BIM spécifique n'est requis pour l'agent. Les outils fournissent le contexte spatial précis ; l'agent apporte le raisonnement. C'est exactement la séparation que ce moteur est conçu à garantir.
+
+#### Interface de tool use — Contrat stable
+
+L'ensemble des outils exposés à un agent IA forme un **contrat fonctionnel stable**. Toute implémentation conforme à cette interface est substituable — que l'agent soit Claude, un autre LLM, ou un agent spécialisé.
+
+```typescript
+interface BIMAgentTools {
+
+  // — Requêtes spatiales —
+  queryRadius(
+    objectId: string,
+    radiusMeters: number
+  ): IFCObject[]
+
+  queryContained(
+    zone: ZoneId | BoundingBox
+  ): IFCObject[]
+
+  queryIntersecting(
+    objectId: string
+  ): IFCObject[]
+
+  queryAdjacent(
+    objectId: string,
+    toleranceMeters?: number
+  ): IFCObject[]
+
+  // — Mesures —
+  measureDistance(
+    objectId1: string,
+    objectId2: string
+  ): number                         // mètres
+
+  measureClearance(
+    objectId: string,
+    direction?: 'devant' | 'derrière' | 'gauche' | 'droite' | 'haut' | 'bas'
+  ): number                         // mètres
+
+  measureVolume(objectId: string): number    // m³
+  measureSurface(objectId: string): number   // m²
+
+  // — Informations —
+  getObjectProperties(objectId: string): Properties
+  getObjectRelations(objectId: string): Relations
+  getObjectBBox(objectId: string): BoundingBox
+  getObjectAIRecognition(objectId: string): AIRecognitionResult
+
+  // — Recherche —
+  findByIFCType(ifcType: string): IFCObject[]
+  findByFunctionalType(functionalType: string): IFCObject[]
+  querySceneGraph(filter: ObjectFilter): IFCObject[]
+
+  // — Vision (opt-in, nécessite connexion) —
+  renderObjectView(
+    objectId: string,
+    angles: ('front' | 'top' | 'iso')[]
+  ): ImageData[]
+
+  renderSpaceView(spaceId: string): ImageData
+}
+```
+
+**Tout ce qui est vérifiable dans une maquette IFC est exprimable via cette interface.** Les primitives spatiales (§5) sont l'implémentation de ce contrat.
+
+#### Composabilité
+
+L'agent IA et le moteur sont indépendants. N'importe quel LLM compatible function calling peut être branché sur cette interface sans modifier le moteur. La version de l'agent évolue séparément de la version du moteur.
+
+---
+
+### 17.1 Paradigme — l'IA comme expert
+
+**Le moteur géométrique est le jeu d'outils de l'IA, pas son gardien.**
+
+Un ingénieur qui vérifie l'accessibilité d'un équipement ne commence pas par la classification administrative de l'objet. Il regarde l'équipement, il mesure le dégagement, il compare à la norme. Si la classification est absente, incohérente ou douteuse, il voit quand même ce que c'est. La règle administrative peut compléter — elle ne conditionne pas le jugement.
+
+L'agent IA opère de la même façon :
+
+| Rôle | Analogie humaine | Rôle dans le système |
+|---|---|---|
+| **Agent IA** | Ingénieur expert | Juge, raisonne, décide |
+| **Reconnaissance visuelle** | Coup d'œil de l'expert | Identifie par la forme et le contexte |
+| **Classification IFC** | Étiquette administrative | Complément, pas condition |
+| **Moteur géométrique** | Instruments de mesure | Fournit les données pour le raisonnement |
+| **Primitives spatiales** | Mètre, distancemètre, jauge | Distance, containment, intersection, volume |
+
+> Les visionneuses classiques vérifient des **données**. Cet agent vérifie des **intentions**.
+
+L'agent opère systématiquement en **logique object-first** : il part des objets physiques, identifiés par leur forme et leur type fonctionnel, et les relations spatiales sont calculées depuis leur géométrie réelle. L'`IfcSpace`, les noms de pièces, la hiérarchie Site/Bâtiment/Étage sont des informations secondaires, jamais des conditions bloquantes.
+
+---
+
+### 17.2 Reconnaissance visuelle
+
+#### Problème couvert
+
+Les fichiers IFC du monde réel contiennent massivement des objets mal classifiés, non classifiés (`IfcBuildingElementProxy`), ou classifiés avec des types trop génériques pour permettre une analyse métier fiable. Cette réalité rend les vérifications basées sur le seul type IFC peu robustes.
+
+La reconnaissance visuelle résout ce problème : l'IA reconnaît chaque objet par sa **forme géométrique 3D rendue**, son **contexte spatial**, ses **dimensions** et ses **relations topologiques avec les objets voisins** — exactement comme un expert reconnaît un équipement en regardant la maquette.
+
+#### Déclenchement
+
+La reconnaissance visuelle est lancée **dès le chargement complet d'un modèle**, en tâche de fond, sans bloquer l'interface. Elle ne nécessite aucune interaction de l'utilisateur pour démarrer. Les résultats se matérialisent progressivement dans l'interface au fur et à mesure de l'analyse.
+
+#### Architecture — 3 passes de reconnaissance
+
+La reconnaissance s'effectue en 3 passes hiérarchiques, imitant la démarche naturelle d'inspection visuelle d'un expert :
+
+```
+Passe 1 — Vue d'ensemble du modèle
+        ↓
+  Contexte global : discipline principale, typologies dominantes,
+  zones techniques probables, organisation volumique
+        ↓
+Passe 2 — Par espace / zone
+        ↓
+  Pour chaque espace IFC ou cluster spatial :
+  rendu de l'espace avec ses objets contenus
+  → identification des objets par type fonctionnel dans leur contexte
+        ↓
+Passe 3 — Par objet (ciblée, priorités)
+        ↓
+  Objets non classifiés, scores faibles en passe 2,
+  objets demandés explicitement par l'utilisateur
+  → rendu focalisé sur l'objet + voisins immédiats
+  → identification précise avec estimation de paramètres
+```
+
+**Pourquoi 3 passes ?**
+
+Passer 200 000 objets en appels API individuels n'est ni économique ni pertinent. La passe 1 donne le contexte global (une chaufferie identifiée en passe 1 donne un prior fort aux objets contenus en passe 2). Les passes 2 et 3 sont ciblées et parallelisables.
+
+#### Données transmises au modèle de vision
+
+Pour chaque appel, l'agent transmet :
+
+```
+Rendu PNG de l'objet dans son contexte (voisins visibles, éclairage 3D standard)
+  +
+Contexte textuel structuré :
+  - Passe précédente : discipline identifiée, type de zone
+  - ifcType déclaré (si disponible) — indice parmi d'autres, pas vérité
+  - Dimensions AABB : L × l × H en mètres
+  - Relations topologiques : "adjacent à [mur porteur], [réseau eau chaude]"
+  - Position dans le bâtiment : étage, position relative
+```
+
+Le fichier IFC source n'est **jamais transmis** — seulement des captures 3D rendues localement et des métadonnées géométriques agrégées.
+
+#### Fournisseur IA — abstraction et évolution
+
+```typescript
+interface GeometryAIProvider {
+  recognizeObject(
+    renders: ImageData[],       // PNG renders (multi-angle)
+    context: ObjectAIContext,   // dimensions, relations, IFC type hint
+  ): Promise<AIRecognitionResult>
+
+  recognizeSpace(
+    render: ImageData,          // espace + objets contenus
+    context: SpaceAIContext,
+  ): Promise<SpaceRecognitionResult>
+
+  recognizeModel(
+    render: ImageData,          // vue d'ensemble
+    modelInfo: ModelAIContext,
+  ): Promise<ModelRecognitionResult>
+}
+
+interface AIRecognitionResult {
+  functionalType:  string        // "chaudière murale", "pompe circulatrice"…
+  ifcTypeProposed: string        // 'IfcBoiler', 'IfcPump'…
+  confidence:      number        // 0–1
+  estimatedParams: Record<string, string | number>  // "puissance: ~24kW"…
+  reasoning:       string        // explication lisible par l'utilisateur
+  requiresValidation: boolean    // true si confidence < seuil configuré
+}
+```
+
+**Fournisseurs supportés**
+
+| Fournisseur | Mode | Disponibilité |
+|---|---|---|
+| **Claude Vision (Anthropic)** | API distante, opt-in | Actuellement implémenté |
+| **Modèle local embarqué** | 100% offline, sans opt-in | Prévu — dépend de la maturité des modèles multimodaux embarqués (type Gemma 4+) |
+
+La transition API → modèle local sera transparente pour l'utilisateur et ne nécessitera aucun changement d'interface. L'abstraction `GeometryAIProvider` garantit que les deux modes sont interchangeables.
+
+#### Score de confiance composite
+
+Pour chaque objet, le score final combine trois sources :
+
+```
+score_composite = α × confiance_IFC + β × confiance_IA + γ × cohérence_spatiale
+
+avec α + β + γ = 1  (pondération configurable, défaut 0.20/0.60/0.20)
+```
+
+| Composante | Signification | Valeur |
+|---|---|---|
+| `confiance_IFC` | Précision de la classification IFC déclarée | 0 si `Proxy`, 0.5 si type générique, 1 si type précis |
+| `confiance_IA` | Confiance du modèle de vision | Score retourné par `AIRecognitionResult.confidence` |
+| `cohérence_spatiale` | Accord type reconnu ↔ contexte | Chaudière dans salle technique = +0.3, dans bureau = −0.5 |
+
+**Seuils**
+
+| Score | Action |
+|---|---|
+| ≥ 0.80 | Reconnaissance automatique, validée silencieusement |
+| 0.60 – 0.79 | Notification passive — l'utilisateur peut consulter et corriger |
+| < 0.60 | Demande de validation active — présentée à l'utilisateur avec la proposition |
+
+#### Flux de validation utilisateur
+
+Pour les objets sous le seuil de validation automatique :
+
+```
+Objet identifié avec confidence < seuil
+         ↓
+"L'IA propose : Chaudière murale (~24 kW) — confiance 67%
+ Classification IFC déclarée : IfcBuildingElementProxy
+ Raison : forme cylindrique verticale, connexions réseau eau chaude
+ [Confirmer]  [Corriger]  [Ignorer]"
+         ↓
+Utilisateur confirme / corrige / ignore
+         ↓
+Résultat stocké dans la couche delta (§14)
+         ↓
+Disponible pour toutes les analyses suivantes
+```
+
+Les corrections de l'utilisateur enrichissent le delta du projet et prennent priorité sur la reconnaissance IA pour les analyses. Elles sont aussi exportables et partageables avec le fichier projet.
+
+#### Cycle de vie de la reconnaissance
+
+```
+Chargement du modèle (DONE)
+    ↓
+Lancement automatique de la reconnaissance (background)
+    ↓
+Passe 1 — vue d'ensemble (1 appel IA)
+    ↓
+Passe 2 — par espace (N appels, parallélisés par batch)
+    ↓
+Passe 3 — objets ciblés (à la demande + sous-seuil passe 2)
+    ↓
+Résultats disponibles dans le SceneGraph
+(enrichissement progressif — l'analyse peut démarrer avant que la reconnaissance soit complète)
+```
+
+---
+
+### 17.3 Agent de Vérification Intelligent
+
+#### Graphe d'objets enrichi
+
+Après analyse géométrique et reconnaissance visuelle, chaque objet IFC est représenté comme un nœud enrichi dans le SceneGraph :
 
 ```json
 {
-  "id": "Garde-corps_N2_A",
-  "type": "IfcRailing",
-  "proprietes": { "..." },
-  "geometrie": { "..." },
+  "expressId": 1234,
+  "ifcType": "IfcBuildingElementProxy",
+  "aiRecognition": {
+    "functionalType": "chaudière murale",
+    "ifcTypeProposed": "IfcBoiler",
+    "confidence": 0.93,
+    "validatedBy": "auto",
+    "estimatedParams": { "puissance_kW": 24 }
+  },
+  "scoreComposite": 0.89,
+  "bbox": { "min": [12.3, 0.1, 5.6], "max": [13.0, 0.8, 7.1] },
+  "relations": {
+    "containedIn": 890,
+    "adjacentTo": [1235, 1236, 1240]
+  },
   "relations_calculees": {
-    "intersecte": ["Chambre_201", "Chambre_202"],
-    "mesures": {
-      "Chambre_201": { "lineaire": 3.2 },
-      "Chambre_202": { "lineaire": 1.8 }
-    }
+    "dégagement_libre": { "avant": 0.72, "gauche": 0.48, "droite": 0.51 }
   }
 }
 ```
 
-### Agent de Vérification Intelligent
+#### Fonctionnement de l'agent
 
-L'IA ne se contente pas de traduire une règle littéralement. Elle **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité de la règle.
+L'agent ne traduit pas une règle littéralement. Il **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité.
 
-**Principe fondamental**
+Pour toute demande soumise, l'agent :
 
-> Les visionneuses classiques vérifient des **données**. Cet agent vérifie des **intentions**.
+1. Analyse l'intention réelle derrière la formulation (langage naturel)
+2. Consulte le SceneGraph enrichi (types IFC + reconnaissance visuelle + relations calculées)
+3. Identifie tous les cas plausibles, y compris les objets identifiés par reconnaissance IA
+4. Sélectionne la ou les primitives spatiales appropriées (§5)
+5. Exécute les analyses et présente un résultat complet
 
-Exemple : l'utilisateur écrit *"vérifier l'accessibilité des équipements de la chaufferie"*. L'agent comprend que l'intention est la maintenance des équipements techniques — il opère automatiquement la transformation vers une logique object-first, indépendante du nommage des espaces.
-
-**Génération des hypothèses**
-
-Pour toute règle soumise, l'agent :
-1. Analyse l'intention réelle derrière la formulation
-2. Identifie tous les cas plausibles dans le modèle
-3. Traite chaque hypothèse avec la primitive spatiale appropriée
-4. Présente un résultat complet couvrant tous les scénarios
-
-**Deux modes d'exécution**
+#### Deux modes d'exécution
 
 | Mode | Comportement |
 |---|---|
 | **Propose** | L'agent présente toutes les hypothèses identifiées et attend validation avant d'exécuter — l'utilisateur contrôle chaque décision |
 | **Execute** | L'agent exécute directement et présente les résultats avec les hypothèses traitées — comme un agent d'exécution de code |
 
-L'utilisateur choisit son mode selon son niveau de confiance dans la règle.
-
-**Flux complet**
+#### Flux complet
 
 ```
-Règle utilisateur (langage naturel)
-           ↓
+Demande utilisateur (langage naturel)
+         ↓
    Interprétation de l'intention
-           ↓
+         ↓
+   Consultation SceneGraph enrichi
+   (IFC + reconnaissance IA + relations calculées)
+         ↓
    Génération des hypothèses
-           ↓
-     Mode Propose          Mode Execute
-  Validation user →            ↓
-           ↓           Exécution directe
+         ↓
+     Mode Propose              Mode Execute
+  Validation user →                ↓
+         ↓               Exécution directe
      Exécution
-           ↓
+         ↓
   Résultats + hypothèses traitées + alertes
   Objets mis en exergue dans la vue 3D
+  Objets à faible confiance signalés
 ```
 
-### Interface IA
+#### Traitement des objets ambigus dans les vérifications
+
+L'agent traite explicitement les cas d'incertitude :
+
+| Cas | Traitement |
+|---|---|
+| Objet reconnu avec confiance ≥ 0.80 | Traité directement dans l'analyse |
+| Objet reconnu avec confiance 0.60–0.79 | Traité, résultat signalé "confiance partielle" |
+| Objet reconnu avec confiance < 0.60 | Présenté à l'utilisateur avant l'analyse |
+| Objet sans reconnaissance IA et sans type IFC précis | Signalé "objet non qualifié" — vérification partielle |
+| Objet dont la validation utilisateur contredit l'IA | La correction utilisateur a priorité absolue |
+
+---
+
+### 17.4 Interface IA
 
 - L'utilisateur pose des questions en **langage naturel**
-- L'IA dispose du graphe enrichi pour raisonner sur le modèle
-- Trois usages :
+- L'IA dispose du SceneGraph enrichi (géométrie + reconnaissance visuelle + relations calculées) pour raisonner
+- Quatre usages :
   1. **Création de règles** (section 8 — Mode IA)
   2. **Interrogation directe** : *"Le garde-corps de la chambre 201 respecte-t-il la norme PMR ?"*
-  3. **Vérification intelligente** : interprétation, hypothèses, exécution
+  3. **Vérification intelligente** : interprétation, hypothèses, exécution sur le SceneGraph enrichi
+  4. **Validation de la reconnaissance** : consulter, confirmer ou corriger les identifications visuelles
+
+**Panneau de reconnaissance**
+
+Un panneau dédié affiche l'état de la reconnaissance visuelle :
+- Progression de la reconnaissance (passeN/N, objets traités/total)
+- Objets en attente de validation (classés par priorité d'analyse)
+- Historique des validations de la session
+- Statistiques : % classifiés, % reconnus par IA, % validés manuellement
 
 ---
 
@@ -703,7 +1060,7 @@ Règle utilisateur (langage naturel)
 |---|---|
 | Taille max par fichier | 500 MB |
 | Premiers objets affichés | < 5 secondes après chargement |
-| Traitement | 100% local, sans serveur |
+| Traitement | 100% local, sans serveur *(exception : reconnaissance visuelle IA, opt-in — voir §2)* |
 | Analyse démarrée avant fin de chargement | Oui (streaming) |
 | Niveaux de détail (LOD) | Oui, adaptés à la distance caméra |
 
@@ -720,9 +1077,11 @@ Règle utilisateur (langage naturel)
 ## 19. Accès & Sauvegarde
 
 - Application en **accès libre** — aucun compte requis
-- Fonctionne localement, sans connexion internet requise
+- Fonctionne localement, sans connexion internet requise pour l'ensemble des fonctionnalités de base
 - Règles sauvegardées dans le fichier projet, **réutilisables sur n'importe quel autre modèle**
-- Aucune donnée du modèle IFC n'est envoyée vers un serveur
+- Le fichier IFC source n'est **jamais transmis** vers un serveur externe
+
+**Exception — Reconnaissance visuelle IA (opt-in)** : lorsque cette fonctionnalité est activée par l'utilisateur, des captures 3D rendues localement (images PNG des objets dans leur contexte) sont transmises au fournisseur IA configuré. Aucune donnée brute du modèle IFC n'est incluse dans ces transmissions. L'utilisateur est informé explicitement avant activation et peut désactiver à tout moment.
 
 ---
 
@@ -761,3 +1120,16 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **CRS** | Coordinate Reference System — système de coordonnées géographiques |
 | **Empreinte composite** | Combinaison Type IFC + Nom + Coordonnées spatiales utilisée pour retrouver un objet dont le GUID a changé |
 | **Cache spatial** | Résultats d'analyses spatiales mémorisés pour éviter les recalculs |
+| **Agent IA** | Module qui raisonne sur le SceneGraph enrichi pour interpréter des intentions et exécuter des vérifications complexes |
+| **Reconnaissance visuelle** | Couche IA qui identifie les objets IFC par leur apparence 3D rendue, indépendamment de leur classification IFC déclarée |
+| **Confiance composite** | Score combinant la qualité de la classification IFC, la confiance de la reconnaissance visuelle IA, et la cohérence spatiale (α × IFC + β × IA + γ × contexte) |
+| **Passe de reconnaissance** | Unité de traitement de la reconnaissance visuelle (passe 1 = vue d'ensemble, passe 2 = par espace, passe 3 = par objet ciblé) |
+| **Fournisseur IA** | Implémentation concrète du moteur de vision (API Claude Vision actuellement, modèle local embarqué en perspective) |
+| **Type fonctionnel** | Type d'un objet tel que reconnu par l'IA depuis sa géométrie ("chaudière murale"), indépendant du type IFC déclaré ("IfcBuildingElementProxy") |
+| **Object-first** | Paradigme d'analyse qui part des objets physiques (géométrie, reconnaissance) plutôt que des contenants hiérarchiques (IfcSpace, niveaux) |
+| **Validation utilisateur** | Action de l'utilisateur qui confirme, corrige ou ignore une proposition de l'IA pour un objet sous le seuil de confiance automatique |
+| **SceneGraph enrichi** | SceneGraph contenant, en plus des données géométriques et IFC, les résultats de reconnaissance visuelle et les relations calculées par les primitives spatiales |
+| **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes (fonctions) pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. Le moteur BIM expose ses primitives dans ce format. |
+| **Interface de tool use** | Contrat stable définissant l'ensemble des outils appelables par un agent IA sur le moteur BIM. Indépendant du LLM utilisé et de l'interface utilisateur. |
+| **Function calling** | Mécanisme standardisé par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Équivalent technique de "tool use". |
+| **Composabilité** | Propriété du moteur qui lui permet d'être branché à n'importe quel LLM compatible function calling sans modification — l'agent et le moteur évoluent indépendamment. |
