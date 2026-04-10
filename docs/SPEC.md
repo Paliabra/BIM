@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.0 — Avril 2026  
+> Version 4.1 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -26,6 +26,7 @@
 15. [Résultats & Exports](#15-résultats--exports)
 16. [Historique des analyses](#16-historique-des-analyses)
 17. [Couche IA](#17-couche-ia)
+    - [17.0 Le moteur comme environnement d'outils pour l'IA](#170-le-moteur-comme-environnement-doutils-pour-lia)
     - [17.1 Paradigme — l'IA comme expert](#171-paradigme--lia-comme-expert)
     - [17.2 Reconnaissance visuelle](#172-reconnaissance-visuelle)
     - [17.3 Agent de Vérification Intelligent](#173-agent-de-vérification-intelligent)
@@ -255,6 +256,12 @@ La **reconnaissance visuelle IA** (§17.2) constitue la seule exception au princ
 - **IFC 2x3** — version la plus répandue dans les fichiers réels
 - **IFC 4.3** — version de référence actuelle buildingSMART
 - La gestion des deux versions est transparente pour l'utilisateur
+
+### Conçu pour le tool use
+
+Le moteur géométrique est conçu pour être **interrogeable par un agent IA via des appels d'outils** (function calling / tool use). C'est la même architecture que celle utilisée par les assistants IA modernes pour interagir avec des systèmes externes — Bash, navigateur web, API. Si ces outils sont les primitives spatiales du moteur BIM, un LLM peut réaliser n'importe quelle vérification architecturale ou technique sans nécessiter d'entraînement BIM spécifique.
+
+L'interface de tool use est un contrat fonctionnel stable entre le moteur et tout agent IA externe. Elle évolue indépendamment de l'interface utilisateur.
 
 ### Indépendance technologique
 
@@ -671,6 +678,96 @@ La couche IA du moteur n'est pas un assistant conversationnel greffé sur un vie
 
 ---
 
+### 17.0 Le moteur comme environnement d'outils pour l'IA
+
+#### Principe fondamental
+
+Un agent IA moderne (Claude, GPT-4, Gemini…) peut raisonner, planifier et agir en appelant des outils externes. Donner à cet agent `Bash`, `Read`, `Grep` — et il devient capable de faire de l'ingénierie logicielle. Donner à ce même agent les primitives spatiales du moteur BIM — et il devient capable de vérifier n'importe quelle intention architecturale ou technique sur n'importe quelle maquette.
+
+Il n'y a pas de différence de nature. C'est le même paradigme.
+
+```
+Agent IA reçoit les outils BIM :
+    → queryRadius("chaudière_01", 0.60)
+    → getObjectRelations("chaudière_01")
+    → renderObjectView("chaudière_01", ["front", "top"])
+    → queryContained(zone_chaufferie)
+    → measureClearance("chaudière_01", "devant")
+    → raisonne sur les résultats
+    → produit : conformité, anomalies, recommandations
+```
+
+Aucun entraînement BIM spécifique n'est requis pour l'agent. Les outils fournissent le contexte spatial précis ; l'agent apporte le raisonnement. C'est exactement la séparation que ce moteur est conçu à garantir.
+
+#### Interface de tool use — Contrat stable
+
+L'ensemble des outils exposés à un agent IA forme un **contrat fonctionnel stable**. Toute implémentation conforme à cette interface est substituable — que l'agent soit Claude, un autre LLM, ou un agent spécialisé.
+
+```typescript
+interface BIMAgentTools {
+
+  // — Requêtes spatiales —
+  queryRadius(
+    objectId: string,
+    radiusMeters: number
+  ): IFCObject[]
+
+  queryContained(
+    zone: ZoneId | BoundingBox
+  ): IFCObject[]
+
+  queryIntersecting(
+    objectId: string
+  ): IFCObject[]
+
+  queryAdjacent(
+    objectId: string,
+    toleranceMeters?: number
+  ): IFCObject[]
+
+  // — Mesures —
+  measureDistance(
+    objectId1: string,
+    objectId2: string
+  ): number                         // mètres
+
+  measureClearance(
+    objectId: string,
+    direction?: 'devant' | 'derrière' | 'gauche' | 'droite' | 'haut' | 'bas'
+  ): number                         // mètres
+
+  measureVolume(objectId: string): number    // m³
+  measureSurface(objectId: string): number   // m²
+
+  // — Informations —
+  getObjectProperties(objectId: string): Properties
+  getObjectRelations(objectId: string): Relations
+  getObjectBBox(objectId: string): BoundingBox
+  getObjectAIRecognition(objectId: string): AIRecognitionResult
+
+  // — Recherche —
+  findByIFCType(ifcType: string): IFCObject[]
+  findByFunctionalType(functionalType: string): IFCObject[]
+  querySceneGraph(filter: ObjectFilter): IFCObject[]
+
+  // — Vision (opt-in, nécessite connexion) —
+  renderObjectView(
+    objectId: string,
+    angles: ('front' | 'top' | 'iso')[]
+  ): ImageData[]
+
+  renderSpaceView(spaceId: string): ImageData
+}
+```
+
+**Tout ce qui est vérifiable dans une maquette IFC est exprimable via cette interface.** Les primitives spatiales (§5) sont l'implémentation de ce contrat.
+
+#### Composabilité
+
+L'agent IA et le moteur sont indépendants. N'importe quel LLM compatible function calling peut être branché sur cette interface sans modifier le moteur. La version de l'agent évolue séparément de la version du moteur.
+
+---
+
 ### 17.1 Paradigme — l'IA comme expert
 
 **Le moteur géométrique est le jeu d'outils de l'IA, pas son gardien.**
@@ -963,7 +1060,7 @@ Un panneau dédié affiche l'état de la reconnaissance visuelle :
 |---|---|
 | Taille max par fichier | 500 MB |
 | Premiers objets affichés | < 5 secondes après chargement |
-| Traitement | 100% local, sans serveur |
+| Traitement | 100% local, sans serveur *(exception : reconnaissance visuelle IA, opt-in — voir §2)* |
 | Analyse démarrée avant fin de chargement | Oui (streaming) |
 | Niveaux de détail (LOD) | Oui, adaptés à la distance caméra |
 
@@ -980,9 +1077,11 @@ Un panneau dédié affiche l'état de la reconnaissance visuelle :
 ## 19. Accès & Sauvegarde
 
 - Application en **accès libre** — aucun compte requis
-- Fonctionne localement, sans connexion internet requise
+- Fonctionne localement, sans connexion internet requise pour l'ensemble des fonctionnalités de base
 - Règles sauvegardées dans le fichier projet, **réutilisables sur n'importe quel autre modèle**
-- Aucune donnée du modèle IFC n'est envoyée vers un serveur
+- Le fichier IFC source n'est **jamais transmis** vers un serveur externe
+
+**Exception — Reconnaissance visuelle IA (opt-in)** : lorsque cette fonctionnalité est activée par l'utilisateur, des captures 3D rendues localement (images PNG des objets dans leur contexte) sont transmises au fournisseur IA configuré. Aucune donnée brute du modèle IFC n'est incluse dans ces transmissions. L'utilisateur est informé explicitement avant activation et peut désactiver à tout moment.
 
 ---
 
@@ -1030,3 +1129,7 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **Object-first** | Paradigme d'analyse qui part des objets physiques (géométrie, reconnaissance) plutôt que des contenants hiérarchiques (IfcSpace, niveaux) |
 | **Validation utilisateur** | Action de l'utilisateur qui confirme, corrige ou ignore une proposition de l'IA pour un objet sous le seuil de confiance automatique |
 | **SceneGraph enrichi** | SceneGraph contenant, en plus des données géométriques et IFC, les résultats de reconnaissance visuelle et les relations calculées par les primitives spatiales |
+| **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes (fonctions) pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. Le moteur BIM expose ses primitives dans ce format. |
+| **Interface de tool use** | Contrat stable définissant l'ensemble des outils appelables par un agent IA sur le moteur BIM. Indépendant du LLM utilisé et de l'interface utilisateur. |
+| **Function calling** | Mécanisme standardisé par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Équivalent technique de "tool use". |
+| **Composabilité** | Propriété du moteur qui lui permet d'être branché à n'importe quel LLM compatible function calling sans modification — l'agent et le moteur évoluent indépendamment. |
