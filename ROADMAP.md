@@ -164,3 +164,15 @@ Les choix technologiques (langages, bibliothèques, moteurs) sont laissés au d�
 1. **Code source** — propre, avec README et instructions de build
 2. **Fichier projet d'exemple** — un `.bimview` pré-configuré avec des règles de test
 3. **Suite de tests spatiaux** — preuve que les calculs sont corrects au centimètre près
+
+---
+
+## Fichiers IFC de test
+
+Les fichiers IFC de référence sont disponibles dans le dépôt privé **`paliabra/bim-examples`**.
+Accès sur demande auprès du porteur du projet.
+
+Pour les utiliser en développement :
+```bash
+git clone https://github.com/paliabra/bim-examples examples
+```
