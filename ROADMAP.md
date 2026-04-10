@@ -101,18 +101,42 @@ Les choix technologiques (langages, bibliothèques, moteurs) sont laissés au d�
 
 ---
 
-## Phase 6 — Agent de Vérification Intelligent (IA)
+## Phase 6A — Reconnaissance visuelle IA
 
-**Objectif :** Rendre l'outil accessible en langage naturel et capable d'interpréter des intentions.
+**Objectif :** Identifier automatiquement tous les objets IFC par leur forme géométrique 3D, indépendamment de leur classification déclarée.
+
+- Abstraction `GeometryAIProvider` (interface stable pour tous les fournisseurs)
+- Intégration API Claude Vision — opt-in explicite, aucune donnée IFC brute transmise
+- 3 passes de reconnaissance : vue d'ensemble → par espace → par objet ciblé
+- Score de confiance composite (IFC + vision IA + cohérence spatiale)
+- Panneau de validation utilisateur pour les objets sous le seuil de confiance (défaut 0.80)
+- Résultats stockés dans la couche delta du projet
+- Interface de gestion de la reconnaissance : progression, file de validation, historique
+- Préparation de l'abstraction locale (interface `GeometryAIProvider` déjà en place pour le futur modèle embarqué)
+
+**Critère de validation :**
+- Modèle avec 30% d'objets `IfcBuildingElementProxy` — la reconnaissance identifie correctement ≥ 85% d'entre eux avec confiance ≥ 0.80
+- Correction utilisateur stockée dans le delta et utilisée dans les analyses suivantes
+- Modèle sans aucun objet classifié — la reconnaissance produit des propositions exploitables pour chaque objet
+
+---
+
+## Phase 6B — Agent de Vérification Intelligent (IA)
+
+**Objectif :** Rendre l'outil accessible en langage naturel et capable d'interpréter des intentions complexes en s'appuyant sur le SceneGraph enrichi.
 
 - Interface de chat en langage naturel
 - Traduction d'une intention en règle structurée (via LLM)
 - Mode **Propose** : l'agent présente les hypothèses et attend validation
 - Mode **Execute** : l'agent exécute directement et présente les résultats
-- Graphe d'objets enrichi (relations calculées accessibles par l'IA)
-- Détection des objets de maintenance sans `IfcSpace` associé
+- SceneGraph enrichi : types IFC + reconnaissance visuelle Phase 6A + relations calculées Phase 4–5
+- Vérification robuste sur objets mal classifiés (l'agent utilise le type fonctionnel reconnu, pas uniquement le type IFC)
+- Détection des objets de maintenance sans `IfcSpace` associé — opère quand même (object-first)
+- Panneau des hypothèses traitées : quels objets ont été identifiés, pourquoi, avec quel niveau de confiance
 
-**Critère de validation :** Demande "Vérifie si les extincteurs sont accessibles". L'agent identifie les extincteurs par leur type IFC, propose un dégagement adapté, exécute la vérification et surligne les non-conformités.
+**Critère de validation :**
+- Demande "Vérifie si les équipements de la chaufferie sont accessibles" — l'agent identifie les équipements par reconnaissance IA + type IFC, calcule les dégagements géométriques réels, surligne les non-conformités, signale les objets dont la reconnaissance était partielle
+- Demande sur un modèle sans `IfcSpace` nommé "chaufferie" — la vérification s'effectue quand même sur les objets identifiés comme équipements de maintenance, quel que soit leur contenant déclaré
 
 ---
 
@@ -164,5 +188,3 @@ Les choix technologiques (langages, bibliothèques, moteurs) sont laissés au d�
 1. **Code source** — propre, avec README et instructions de build
 2. **Fichier projet d'exemple** — un `.bimview` pré-configuré avec des règles de test
 3. **Suite de tests spatiaux** — preuve que les calculs sont corrects au centimètre près
-
----
