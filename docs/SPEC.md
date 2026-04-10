@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.1 — Avril 2026  
+> Version 4.2 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -257,11 +257,13 @@ La **reconnaissance visuelle IA** (§17.2) constitue la seule exception au princ
 - **IFC 4.3** — version de référence actuelle buildingSMART
 - La gestion des deux versions est transparente pour l'utilisateur
 
-### Conçu pour le tool use
+### Conçu pour le tool use via MCP
 
-Le moteur géométrique est conçu pour être **interrogeable par un agent IA via des appels d'outils** (function calling / tool use). C'est la même architecture que celle utilisée par les assistants IA modernes pour interagir avec des systèmes externes — Bash, navigateur web, API. Si ces outils sont les primitives spatiales du moteur BIM, un LLM peut réaliser n'importe quelle vérification architecturale ou technique sans nécessiter d'entraînement BIM spécifique.
+Le moteur géométrique expose ses primitives spatiales comme un **serveur MCP (Model Context Protocol)**. MCP est le protocole standard ouvert qui permet à un LLM de découvrir et d'appeler des outils externes de façon structurée — exactement comme Claude utilise `Bash`, `Read` ou `Grep` dans une session de code.
 
-L'interface de tool use est un contrat fonctionnel stable entre le moteur et tout agent IA externe. Elle évolue indépendamment de l'interface utilisateur.
+Tout LLM compatible MCP (Claude, et tout modèle adoptant le protocole) peut se connecter au serveur BIM et exécuter des vérifications complexes sur n'importe quelle maquette, sans entraînement BIM spécifique et sans développement d'intégration personnalisé.
+
+Le serveur MCP est le **point de connexion universel** entre le moteur BIM et tout agent IA externe. Il évolue indépendamment de l'interface utilisateur.
 
 ### Indépendance technologique
 
@@ -678,93 +680,103 @@ La couche IA du moteur n'est pas un assistant conversationnel greffé sur un vie
 
 ---
 
-### 17.0 Le moteur comme environnement d'outils pour l'IA
+### 17.0 Le moteur comme serveur MCP
 
 #### Principe fondamental
 
-Un agent IA moderne (Claude, GPT-4, Gemini…) peut raisonner, planifier et agir en appelant des outils externes. Donner à cet agent `Bash`, `Read`, `Grep` — et il devient capable de faire de l'ingénierie logicielle. Donner à ce même agent les primitives spatiales du moteur BIM — et il devient capable de vérifier n'importe quelle intention architecturale ou technique sur n'importe quelle maquette.
+Un agent IA moderne (Claude, GPT-4, Gemini…) peut raisonner, planifier et agir en appelant des outils externes via le protocole MCP. Donner à cet agent `Bash`, `Read`, `Grep` — et il devient capable de faire de l'ingénierie logicielle. Donner à ce même agent les primitives spatiales du moteur BIM via un serveur MCP — et il devient capable de vérifier n'importe quelle intention architecturale ou technique sur n'importe quelle maquette.
 
 Il n'y a pas de différence de nature. C'est le même paradigme.
 
 ```
-Agent IA reçoit les outils BIM :
-    → queryRadius("chaudière_01", 0.60)
-    → getObjectRelations("chaudière_01")
-    → renderObjectView("chaudière_01", ["front", "top"])
-    → queryContained(zone_chaufferie)
-    → measureClearance("chaudière_01", "devant")
+BIM Viewer (MCP Server local)
+    expose : queryRadius, queryContained, measureClearance, renderObjectView…
+
+Agent IA (MCP Client — Claude ou autre)
+    → appelle queryRadius("chaudière_01", 0.60)     ← MCP tool call
+    → appelle getObjectRelations("chaudière_01")    ← MCP tool call
+    → appelle renderObjectView("chaudière_01", …)   ← MCP tool call
     → raisonne sur les résultats
     → produit : conformité, anomalies, recommandations
 ```
 
-Aucun entraînement BIM spécifique n'est requis pour l'agent. Les outils fournissent le contexte spatial précis ; l'agent apporte le raisonnement. C'est exactement la séparation que ce moteur est conçu à garantir.
+Aucun entraînement BIM spécifique n'est requis pour l'agent. Le serveur MCP fournit le contexte spatial précis ; l'agent apporte le raisonnement.
 
-#### Interface de tool use — Contrat stable
+#### Architecture MCP
 
-L'ensemble des outils exposés à un agent IA forme un **contrat fonctionnel stable**. Toute implémentation conforme à cette interface est substituable — que l'agent soit Claude, un autre LLM, ou un agent spécialisé.
+Le moteur expose **un serveur MCP local** (démarré avec le viewer, accessible via transport stdio ou HTTP+SSE selon le mode de déploiement). Tout client MCP peut s'y connecter et découvrir les outils disponibles via le mécanisme de découverte standard du protocole.
 
-```typescript
-interface BIMAgentTools {
-
-  // — Requêtes spatiales —
-  queryRadius(
-    objectId: string,
-    radiusMeters: number
-  ): IFCObject[]
-
-  queryContained(
-    zone: ZoneId | BoundingBox
-  ): IFCObject[]
-
-  queryIntersecting(
-    objectId: string
-  ): IFCObject[]
-
-  queryAdjacent(
-    objectId: string,
-    toleranceMeters?: number
-  ): IFCObject[]
-
-  // — Mesures —
-  measureDistance(
-    objectId1: string,
-    objectId2: string
-  ): number                         // mètres
-
-  measureClearance(
-    objectId: string,
-    direction?: 'devant' | 'derrière' | 'gauche' | 'droite' | 'haut' | 'bas'
-  ): number                         // mètres
-
-  measureVolume(objectId: string): number    // m³
-  measureSurface(objectId: string): number   // m²
-
-  // — Informations —
-  getObjectProperties(objectId: string): Properties
-  getObjectRelations(objectId: string): Relations
-  getObjectBBox(objectId: string): BoundingBox
-  getObjectAIRecognition(objectId: string): AIRecognitionResult
-
-  // — Recherche —
-  findByIFCType(ifcType: string): IFCObject[]
-  findByFunctionalType(functionalType: string): IFCObject[]
-  querySceneGraph(filter: ObjectFilter): IFCObject[]
-
-  // — Vision (opt-in, nécessite connexion) —
-  renderObjectView(
-    objectId: string,
-    angles: ('front' | 'top' | 'iso')[]
-  ): ImageData[]
-
-  renderSpaceView(spaceId: string): ImageData
-}
+```
+┌─────────────────────────────────────┐
+│           BIM Viewer                │
+│                                     │
+│  ┌──────────────┐  ┌─────────────┐  │
+│  │  SceneGraph  │  │  Renderer   │  │
+│  │  SpatialIdx  │  │  (Three.js) │  │
+│  └──────┬───────┘  └─────────────┘  │
+│         │                           │
+│  ┌──────▼──────────────────────┐    │
+│  │       MCP Server            │    │
+│  │  (primitives spatiales      │    │
+│  │   exposées comme MCP tools) │    │
+│  └──────────────┬──────────────┘    │
+└─────────────────┼───────────────────┘
+                  │ stdio / HTTP+SSE
+          ┌───────▼────────┐
+          │   MCP Client   │
+          │ (Claude, autre │
+          │  LLM MCP-compat│
+          └────────────────┘
 ```
 
-**Tout ce qui est vérifiable dans une maquette IFC est exprimable via cette interface.** Les primitives spatiales (§5) sont l'implémentation de ce contrat.
+#### Outils MCP exposés — Contrat stable
+
+L'ensemble des outils MCP exposés forme un **contrat fonctionnel stable**. Toute implémentation conforme est substituable — que le client soit Claude, un autre LLM MCP-compatible, ou un agent spécialisé. Le contrat est versionné indépendamment du viewer.
+
+```typescript
+// MCP Tool definitions (schéma JSON Schema sous le capot)
+
+// — Requêtes spatiales —
+tool queryRadius(objectId: string, radiusMeters: number): IFCObject[]
+tool queryContained(zone: ZoneId | BoundingBox): IFCObject[]
+tool queryIntersecting(objectId: string): IFCObject[]
+tool queryAdjacent(objectId: string, toleranceMeters?: number): IFCObject[]
+
+// — Mesures —
+tool measureDistance(objectId1: string, objectId2: string): number   // mètres
+tool measureClearance(
+  objectId: string,
+  direction?: 'devant' | 'derrière' | 'gauche' | 'droite' | 'haut' | 'bas'
+): number                                                             // mètres
+tool measureVolume(objectId: string): number                          // m³
+tool measureSurface(objectId: string): number                         // m²
+
+// — Informations —
+tool getObjectProperties(objectId: string): Properties
+tool getObjectRelations(objectId: string): Relations
+tool getObjectBBox(objectId: string): BoundingBox
+tool getObjectAIRecognition(objectId: string): AIRecognitionResult
+
+// — Recherche —
+tool findByIFCType(ifcType: string): IFCObject[]
+tool findByFunctionalType(functionalType: string): IFCObject[]
+tool querySceneGraph(filter: ObjectFilter): IFCObject[]
+
+// — Ressources MCP (lecture directe, sans appel de fonction) —
+resource scenegraph://model/{modelId}        → état complet d'un modèle
+resource scenegraph://object/{objectId}      → données complètes d'un objet
+resource scenegraph://summary                → statistiques globales du projet
+
+// — Vision (opt-in, nécessite connexion — voir §2) —
+tool renderObjectView(objectId: string, angles: ('front'|'top'|'iso')[]): ImageData[]
+tool renderSpaceView(spaceId: string): ImageData
+```
+
+**Tout ce qui est vérifiable dans une maquette IFC est exprimable via ce contrat MCP.** Les primitives spatiales (§5) sont l'implémentation des outils. Les ressources MCP donnent accès en lecture directe au SceneGraph enrichi.
 
 #### Composabilité
 
-L'agent IA et le moteur sont indépendants. N'importe quel LLM compatible function calling peut être branché sur cette interface sans modifier le moteur. La version de l'agent évolue séparément de la version du moteur.
+Le viewer et l'agent IA sont découplés par le protocole MCP. Aucune modification du viewer n'est nécessaire pour changer d'agent. Aucune modification de l'agent n'est nécessaire pour une nouvelle version du viewer, tant que le contrat MCP est respecté.
 
 ---
 
@@ -1129,7 +1141,9 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **Object-first** | Paradigme d'analyse qui part des objets physiques (géométrie, reconnaissance) plutôt que des contenants hiérarchiques (IfcSpace, niveaux) |
 | **Validation utilisateur** | Action de l'utilisateur qui confirme, corrige ou ignore une proposition de l'IA pour un objet sous le seuil de confiance automatique |
 | **SceneGraph enrichi** | SceneGraph contenant, en plus des données géométriques et IFC, les résultats de reconnaissance visuelle et les relations calculées par les primitives spatiales |
-| **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes (fonctions) pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. Le moteur BIM expose ses primitives dans ce format. |
-| **Interface de tool use** | Contrat stable définissant l'ensemble des outils appelables par un agent IA sur le moteur BIM. Indépendant du LLM utilisé et de l'interface utilisateur. |
-| **Function calling** | Mécanisme standardisé par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Équivalent technique de "tool use". |
-| **Composabilité** | Propriété du moteur qui lui permet d'être branché à n'importe quel LLM compatible function calling sans modification — l'agent et le moteur évoluent indépendamment. |
+| **MCP** | Model Context Protocol — protocole standard ouvert (Anthropic) permettant à un LLM de découvrir et d'appeler des outils externes de façon structurée. Le moteur BIM expose ses primitives via un serveur MCP. |
+| **Serveur MCP** | Composant du moteur BIM qui expose les primitives spatiales comme outils MCP appelables par tout LLM compatible. Tourne localement avec le viewer (transport stdio ou HTTP+SSE). |
+| **Ressource MCP** | Données lisibles directement par l'agent via le protocole MCP sans appel de fonction — état du SceneGraph, données d'un objet, statistiques du projet. |
+| **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. MCP est le protocole qui standardise ce mécanisme. |
+| **Function calling** | Mécanisme par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Implémentation sous-jacente de MCP tool calls. |
+| **Composabilité** | Propriété du moteur garantie par le protocole MCP : tout LLM compatible peut être branché sans modifier le viewer, et toute mise à jour du viewer est transparente pour l'agent tant que le contrat MCP est respecté. |

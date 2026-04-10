@@ -121,12 +121,13 @@ Les choix technologiques (langages, bibliothèques, moteurs) sont laissés au d�
 
 ---
 
-## Phase 6B — Agent de Vérification Intelligent (IA)
+## Phase 6B — Agent de Vérification Intelligent (IA) & Serveur MCP
 
-**Objectif :** Rendre l'outil accessible en langage naturel et capable d'interpréter des intentions complexes en s'appuyant sur le SceneGraph enrichi.
+**Objectif :** Rendre l'outil accessible en langage naturel, exposer le moteur comme serveur MCP pour tout LLM compatible.
 
-- Interface de chat en langage naturel
-- Traduction d'une intention en règle structurée (via LLM)
+- **Serveur MCP local** — expose les primitives spatiales comme outils MCP (`queryRadius`, `queryContained`, `measureClearance`, `renderObjectView`…) et les données du SceneGraph comme ressources MCP — tout client MCP peut s'y connecter sans modification du viewer
+- Interface de chat en langage naturel (agent intégré au viewer)
+- Traduction d'une intention en appels d'outils MCP (via LLM)
 - Mode **Propose** : l'agent présente les hypothèses et attend validation
 - Mode **Execute** : l'agent exécute directement et présente les résultats
 - SceneGraph enrichi : types IFC + reconnaissance visuelle Phase 6A + relations calculées Phase 4–5
@@ -137,6 +138,7 @@ Les choix technologiques (langages, bibliothèques, moteurs) sont laissés au d�
 **Critère de validation :**
 - Demande "Vérifie si les équipements de la chaufferie sont accessibles" — l'agent identifie les équipements par reconnaissance IA + type IFC, calcule les dégagements géométriques réels, surligne les non-conformités, signale les objets dont la reconnaissance était partielle
 - Demande sur un modèle sans `IfcSpace` nommé "chaufferie" — la vérification s'effectue quand même sur les objets identifiés comme équipements de maintenance, quel que soit leur contenant déclaré
+- Connexion d'un client MCP externe (ex : Claude Desktop) au serveur local — les outils sont découverts automatiquement, une vérification complexe s'exécute sans modifier le viewer
 
 ---
 
