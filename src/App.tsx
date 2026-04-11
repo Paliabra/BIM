@@ -1,4 +1,4 @@
-import { useReducer, useEffect, useCallback, type ReactNode } from 'react'
+import { useReducer, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { useBim } from './context/BimContext'
 import { Viewer3D } from './components/Viewer3D/Viewer3D'
 import { DisciplineModal } from './components/DisciplineModal'
@@ -162,8 +162,8 @@ export function App() {
   const { graph, registry, getRenderer } = useBim()
   const [state, dispatch] = useReducer(reducer, initialState)
 
-  // Worker singleton — created once, lives for the app lifetime
-  const workerRef = { current: null as Worker | null }
+  // Worker singleton — must be useRef so mutations survive re-renders
+  const workerRef = useRef<Worker | null>(null)
 
   // ── Worker lifecycle ────────────────────────────────────────────────────────
   useEffect(() => {

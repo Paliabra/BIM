@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import type { IfcSpatialTree, IfcTreeNode } from '../types/ifc-schema'
+import type { SceneGraph } from '../core/SceneGraph'
 import { useBim } from '../context/BimContext'
 
 interface ModelTreeProps {
@@ -50,10 +51,9 @@ const IFC_TYPE_ICONS: Record<string, string> = {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Collect all expressIds in a subtree (node itself + all descendants).
- * Used to know which meshes to toggle when a storey node is clicked.
+ * Collect structural node expressIds in a subtree (Site/Building/Storey/Space).
  */
-function collectExpressIds(node: IfcTreeNode): Set<number> {
+function collectStructuralIds(node: IfcTreeNode): Set<number> {
   const ids = new Set<number>()
   const visit = (n: IfcTreeNode) => {
     ids.add(n.expressId)
@@ -61,6 +61,26 @@ function collectExpressIds(node: IfcTreeNode): Set<number> {
   }
   visit(node)
   return ids
+}
+
+/**
+ * Collect ALL object expressIds that belong to a subtree:
+ *   1. Structural nodes themselves (Site, Building, Storey, Space)
+ *   2. IFC elements (IfcWall, IfcDoor, …) that declare
+ *      `containedInSpatialStructure` pointing to any node in the subtree.
+ *
+ * This is the correct set to pass to setObjectsVisibility.
+ */
+function collectAllObjectIds(node: IfcTreeNode, graph: SceneGraph): Set<number> {
+  const structuralIds = collectStructuralIds(node)
+  const allIds = new Set(structuralIds)
+  for (const obj of graph.values()) {
+    const cis = obj.relations.containedInSpatialStructure
+    if (cis !== undefined && structuralIds.has(cis)) {
+      allIds.add(obj.expressId)
+    }
+  }
+  return allIds
 }
 
 // ── TreeNode ─────────────────────────────────────────────────────────────────
@@ -74,7 +94,7 @@ function TreeNode({
   depth: number
   parentHidden?: boolean
 }) {
-  const { getRenderer } = useBim()
+  const { getRenderer, graph } = useBim()
   const [open, setOpen]       = useState(depth < 2)
   const [hidden, setHidden]   = useState(false)
 
@@ -96,11 +116,11 @@ function TreeNode({
       e.stopPropagation()
       const nextHidden = !hidden
       setHidden(nextHidden)
-      // Collect all expressIds in this subtree and toggle them
-      const ids = collectExpressIds(node)
+      // Collect structural nodes + all IFC elements contained in this subtree
+      const ids = collectAllObjectIds(node, graph)
       getRenderer()?.setObjectsVisibility(ids, !nextHidden)
     },
-    [hidden, node, getRenderer],
+    [hidden, node, graph, getRenderer],
   )
 
   return (
