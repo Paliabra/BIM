@@ -11,6 +11,7 @@ import { SectionControls } from './components/SectionControls'
 import type { IfcSpatialTree, IfcModel } from './types/ifc-schema'
 import type { FromWorker } from './workers/worker-protocol'
 import type { SectionAxis } from './renderer/SectionPlane'
+import type { MeasureSubMode } from './renderer/MeasureTool'
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ interface AppState {
   selectedExpressId:  number | null
   selectedModelId:    string | null
   mode:               InteractionMode
+  measureSubMode:     MeasureSubMode
   fitTrigger:         number
   loading:            LoadingState | null
   pendingFile:        File | null
@@ -51,6 +53,7 @@ type AppAction =
   | { type: 'MODEL_VISIBILITY';    modelId: string; visible: boolean }
   | { type: 'MODEL_DISCIPLINE';    modelId: string; discipline: string }
   | { type: 'SET_MODE';            mode: InteractionMode }
+  | { type: 'SET_MEASURE_SUBMODE'; subMode: MeasureSubMode }
   | { type: 'FIT' }
   | { type: 'WORKER_ERROR';        message: string }
   | { type: 'DISMISS_ERROR' }
@@ -127,6 +130,9 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_MODE':
       return { ...state, mode: action.mode }
 
+    case 'SET_MEASURE_SUBMODE':
+      return { ...state, measureSubMode: action.subMode }
+
     case 'FIT':
       return { ...state, fitTrigger: state.fitTrigger + 1 }
 
@@ -141,6 +147,7 @@ const initialState: AppState = {
   selectedExpressId: null,
   selectedModelId:   null,
   mode:              'orbit',
+  measureSubMode:    'distance',
   fitTrigger:        0,
   loading:           null,
   pendingFile:       null,
@@ -367,6 +374,36 @@ export function App() {
           ))}
         </div>
 
+        {/* Measure sub-mode toolbar — visible only in measure mode */}
+        {state.mode === 'measure' && (
+          <>
+            <div className="w-px h-4 bg-surface-600" />
+            <div className="flex gap-1">
+              {(
+                [
+                  { sub: 'distance', label: '⟷ Distance', title: 'Distance entre 2 points' },
+                  { sub: 'angle',    label: '∠ Angle',    title: 'Angle entre 2 directions' },
+                  { sub: 'area',     label: '⬜ Surface',  title: 'Surface d\'un polygone (double-clic pour fermer)' },
+                ] as const
+              ).map(({ sub, label, title }) => (
+                <button
+                  key={sub}
+                  onClick={() => dispatch({ type: 'SET_MEASURE_SUBMODE', subMode: sub })}
+                  title={title}
+                  className={[
+                    'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                    state.measureSubMode === sub
+                      ? 'bg-yellow-500/20 text-yellow-300 ring-1 ring-yellow-500/50'
+                      : 'bg-surface-700 text-surface-400 hover:text-white',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
         {/* Fit button */}
         <button
           onClick={() => dispatch({ type: 'FIT' })}
@@ -410,6 +447,7 @@ export function App() {
           <Viewer3D
             onObjectPicked={handleObjectPicked}
             mode={state.mode}
+            measureSubMode={state.measureSubMode}
             selectedExpressId={state.selectedExpressId}
             fitTrigger={state.fitTrigger}
           />

@@ -11,29 +11,32 @@ import { ObjectPicker } from '../../renderer/ObjectPicker'
 import { HighlightManager } from '../../renderer/HighlightManager'
 import { SectionPlane } from '../../renderer/SectionPlane'
 import { MeasureTool } from '../../renderer/MeasureTool'
-import type { MeasureResult } from '../../renderer/MeasureTool'
+import type { MeasureResult, MeasureSubMode, SnapResult } from '../../renderer/MeasureTool'
 import { useSceneSync } from './useSceneSync'
 import { useBim } from '../../context/BimContext'
 
 interface Viewer3DProps {
-  /** Called when user clicks an IFC object (select mode). */
-  onObjectPicked: (expressId: number, modelId: string) => void
-  /** Current interaction mode. */
-  mode: 'orbit' | 'select' | 'measure'
-  /** expressId of currently selected object (for highlight). */
+  onObjectPicked:   (expressId: number, modelId: string) => void
+  mode:             'orbit' | 'select' | 'measure'
+  measureSubMode:   MeasureSubMode
   selectedExpressId: number | null
-  /** Incremented externally to trigger a camera fit. */
-  fitTrigger: number
+  fitTrigger:        number
+}
+
+const SNAP_LABELS: Record<string, string> = {
+  vertex:   'Sommet',
+  midpoint: 'Milieu',
+  face:     'Face',
 }
 
 /**
- * The 3D viewport.
- * Owns: Three.js scene, camera, controls, object picker, highlights, section plane, measure tool.
- * Communicates upstream via: onObjectPicked callback + BimContext renderer API.
+ * 3D viewport with CAD-level measurement tool.
+ * Communicates upstream via: onObjectPicked + BimContext renderer API.
  */
 export function Viewer3D({
   onObjectPicked,
   mode,
+  measureSubMode,
   selectedExpressId,
   fitTrigger,
 }: Viewer3DProps) {
@@ -42,7 +45,7 @@ export function Viewer3D({
   const canvasRef  = useRef<HTMLCanvasElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
 
-  // Three.js refs — initialised once on mount
+  // Three.js refs
   const sceneRef     = useRef<THREE.Scene | null>(null)
   const cameraRef    = useRef<THREE.PerspectiveCamera | null>(null)
   const rendererRef  = useRef<THREE.WebGLRenderer | null>(null)
@@ -52,31 +55,40 @@ export function Viewer3D({
   const sectionRef   = useRef<SectionPlane | null>(null)
   const measureRef   = useRef<MeasureTool | null>(null)
   const axesRef      = useRef<HTMLCanvasElement | null>(null)
-  const modeRef      = useRef<'orbit' | 'select' | 'measure'>(mode)
+  const modeRef      = useRef(mode)
 
-  // Distance measurement result — shown as overlay
+  // Measurement overlay state
+  const [snapResult,    setSnapResult]    = useState<SnapResult | null>(null)
   const [measureResult, setMeasureResult] = useState<MeasureResult | null>(null)
 
-  // Keep modeRef current on every render without re-running the scene init effect
+  // Keep mode ref current
   useEffect(() => {
     modeRef.current = mode
+    const tool = measureRef.current
+    if (!tool) return
     if (mode === 'measure') {
-      measureRef.current?.enable()
+      tool.enable(measureSubMode)
     } else {
-      measureRef.current?.disable()
+      tool.disable()
+      setSnapResult(null)
+      setMeasureResult(null)
     }
-  }, [mode])
+  }, [mode, measureSubMode])
+
+  // Sub-mode change while already in measure mode
+  useEffect(() => {
+    if (mode !== 'measure') return
+    measureRef.current?.setSubMode(measureSubMode)
+    setMeasureResult(null)
+  }, [measureSubMode, mode])
 
   const { handleWorkerMessage, setModelVisibility, setTypeVisibility, setObjectsVisibility, updateSectionPlane, removeModel } =
     useSceneSync(sceneRef.current, graph, sectionRef.current)
 
-  // Stable ref so the renderer registration closure always calls the latest version
   const sceneSyncRef = useRef(handleWorkerMessage)
   sceneSyncRef.current = handleWorkerMessage
 
-  // ── Register the renderer API in BimContext ────────────────────────────────
-  // Done in a separate effect so registration re-runs if any callback changes.
-  // setObjectsVisibility has no deps so it's always stable.
+  // ── Register renderer API in BimContext ────────────────────────────────────
   useEffect(() => {
     registerRenderer({
       handleWorkerMessage: (msg) => sceneSyncRef.current(msg),
@@ -98,7 +110,7 @@ export function Viewer3D({
         }
       },
       setMeasureMode: (active) => {
-        if (active) measureRef.current?.enable()
+        if (active) measureRef.current?.enable(measureSubMode)
         else measureRef.current?.disable()
       },
     })
@@ -109,9 +121,10 @@ export function Viewer3D({
     setObjectsVisibility,
     removeModel,
     updateSectionPlane,
+    measureSubMode,
   ])
 
-  // ── Initialise Three.js on mount ──────────────────────────────────────────
+  // ── Three.js initialisation ────────────────────────────────────────────────
   useEffect(() => {
     const canvas  = canvasRef.current
     const wrapper = wrapperRef.current
@@ -127,7 +140,7 @@ export function Viewer3D({
     const picker       = new ObjectPicker(camera, scene, canvas)
     const highlight    = new HighlightManager(scene)
     const sectionPlane = new SectionPlane(renderer)
-    const measure      = new MeasureTool(scene, camera, canvas, setMeasureResult)
+    const measure      = new MeasureTool(scene, camera, canvas, setSnapResult, setMeasureResult)
 
     controlsRef.current  = controls
     pickerRef.current    = picker
@@ -138,8 +151,7 @@ export function Viewer3D({
     wrapper.appendChild(axesCanvas)
 
     const ro = new ResizeObserver(() => {
-      const { clientWidth: w, clientHeight: h } = wrapper
-      resizeRenderer(renderer, camera, w, h)
+      resizeRenderer(renderer, camera, wrapper.clientWidth, wrapper.clientHeight)
     })
     ro.observe(wrapper)
     resizeRenderer(renderer, camera, wrapper.clientWidth, wrapper.clientHeight)
@@ -160,7 +172,7 @@ export function Viewer3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Fit camera ────────────────────────────────────────────────────────────
+  // ── Camera fit ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (fitTrigger === 0) return
     const controls = controlsRef.current
@@ -168,12 +180,12 @@ export function Viewer3D({
     const bbox = graph.globalBbox()
     if (!bbox.isEmpty()) {
       controls.fitToBbox(bbox)
-      const sceneGrid = sceneRef.current?.children.find((c) => c instanceof THREE.GridHelper)
-      if (sceneGrid) sceneGrid.position.y = bbox.min.y
+      const grid = sceneRef.current?.children.find((c) => c instanceof THREE.GridHelper)
+      if (grid) grid.position.y = bbox.min.y
     }
   }, [fitTrigger, graph])
 
-  // ── Selection highlight ───────────────────────────────────────────────────
+  // ── Selection highlight ────────────────────────────────────────────────────
   useEffect(() => {
     const h = highlightRef.current
     if (!h) return
@@ -181,30 +193,37 @@ export function Viewer3D({
     if (selectedExpressId !== null) h.highlight(selectedExpressId, 'selected')
   }, [selectedExpressId])
 
-  // ── Click handler ─────────────────────────────────────────────────────────
+  // ── Mouse move → snap preview ──────────────────────────────────────────────
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (modeRef.current === 'measure') {
+      measureRef.current?.handleMouseMove(e.nativeEvent)
+    }
+  }, [])
+
+  // ── Click ──────────────────────────────────────────────────────────────────
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
-      // Measure mode: let MeasureTool handle the click first
       if (modeRef.current === 'measure') {
         measureRef.current?.handleClick(e.nativeEvent)
         return
       }
       if (modeRef.current !== 'select') return
       const result = pickerRef.current?.pick(e.nativeEvent)
-      if (result) {
-        onObjectPicked(result.expressId, result.modelId)
-      } else {
-        onObjectPicked(-1, '')
-      }
+      if (result) onObjectPicked(result.expressId, result.modelId)
+      else         onObjectPicked(-1, '')
     },
     [onObjectPicked],
   )
 
-  // ── Cursor style ──────────────────────────────────────────────────────────
-  const cursor =
-    mode === 'measure' ? 'crosshair'
-    : mode === 'select' ? 'crosshair'
-    : 'grab'
+  // ── Double-click → close area polygon ─────────────────────────────────────
+  const handleDblClick = useCallback((_e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (modeRef.current === 'measure') {
+      measureRef.current?.handleDblClick()
+    }
+  }, [])
+
+  // ── Cursor ─────────────────────────────────────────────────────────────────
+  const cursor = mode === 'orbit' ? 'grab' : 'crosshair'
 
   return (
     <div ref={wrapperRef} className="relative w-full h-full bg-surface-900 overflow-hidden">
@@ -212,22 +231,87 @@ export function Viewer3D({
         ref={canvasRef}
         className="w-full h-full block"
         style={{ cursor }}
+        onMouseMove={handleMouseMove}
         onClick={handleClick}
+        onDoubleClick={handleDblClick}
       />
 
-      {/* ── Measure overlay ─────────────────────────────────────────────── */}
-      {measureResult && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface-800/90 backdrop-blur border border-surface-600 rounded-lg px-4 py-2 text-center pointer-events-none select-none">
-          <div className="text-accent font-mono text-lg font-semibold">
-            {measureResult.distance.toFixed(3)} m
+      {/* ── Snap indicator (top-left) ─────────────────────────────────────── */}
+      {mode === 'measure' && snapResult && (
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-surface-800/80 backdrop-blur rounded px-2 py-1 pointer-events-none select-none">
+          <SnapIcon type={snapResult.type} />
+          <span className="text-[11px] font-medium text-surface-300">
+            {SNAP_LABELS[snapResult.type]}
+          </span>
+        </div>
+      )}
+
+      {/* ── Measurement result (bottom center) ───────────────────────────── */}
+      {mode === 'measure' && measureResult && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface-800/90 backdrop-blur border border-surface-600 rounded-lg px-5 py-3 text-center pointer-events-none select-none">
+          <div className="text-surface-500 text-[10px] uppercase tracking-widest mb-1">
+            {measureResult.subMode === 'distance' ? 'Distance'
+            : measureResult.subMode === 'angle'   ? 'Angle'
+            : 'Surface'}
           </div>
-          <div className="text-surface-400 text-xs mt-0.5">
-            {measureResult.from.x.toFixed(2)},{measureResult.from.y.toFixed(2)},{measureResult.from.z.toFixed(2)}
-            {' → '}
-            {measureResult.to.x.toFixed(2)},{measureResult.to.y.toFixed(2)},{measureResult.to.z.toFixed(2)}
+          <div className="text-accent font-mono text-2xl font-semibold">
+            {measureResult.label}
           </div>
+          {measureResult.subMode === 'distance' && measureResult.points.length === 2 && (
+            <div className="text-surface-500 text-[10px] mt-1 font-mono">
+              {'('}
+              {measureResult.points[0].x.toFixed(2)},
+              {measureResult.points[0].y.toFixed(2)},
+              {measureResult.points[0].z.toFixed(2)}
+              {') → ('}
+              {measureResult.points[1].x.toFixed(2)},
+              {measureResult.points[1].y.toFixed(2)},
+              {measureResult.points[1].z.toFixed(2)}
+              {')'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Measure hint (when active, no result yet) ─────────────────────── */}
+      {mode === 'measure' && !measureResult && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-surface-800/70 backdrop-blur rounded px-4 py-2 pointer-events-none select-none">
+          <span className="text-surface-400 text-xs">
+            {measureResult === null && (
+              <>
+                {measureSubMode === 'distance' && 'Cliquez deux points pour mesurer la distance'}
+                {measureSubMode === 'angle'    && 'Cliquez le sommet puis deux points de direction'}
+                {measureSubMode === 'area'     && 'Cliquez les sommets du polygone — double-clic pour fermer'}
+              </>
+            )}
+          </span>
         </div>
       )}
     </div>
+  )
+}
+
+// ── Snap icon ─────────────────────────────────────────────────────────────────
+
+function SnapIcon({ type }: { type: string }) {
+  const cls = 'w-3 h-3 shrink-0'
+  if (type === 'vertex') {
+    return (
+      <svg className={cls} viewBox="0 0 10 10" fill="#ffcc00">
+        <rect x="1" y="1" width="8" height="8" />
+      </svg>
+    )
+  }
+  if (type === 'midpoint') {
+    return (
+      <svg className={cls} viewBox="0 0 10 10" fill="#ffcc00">
+        <polygon points="5,0 10,5 5,10 0,5" />
+      </svg>
+    )
+  }
+  return (
+    <svg className={cls} viewBox="0 0 10 10" fill="#ffcc00">
+      <circle cx="5" cy="5" r="4" />
+    </svg>
   )
 }
