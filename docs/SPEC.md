@@ -457,6 +457,64 @@ Organisées selon 3 axes de catégorisation :
 - Métrés et quantitatifs
 - Analyse de performance spatiale
 
+### Famille de règles : Connectivité géométrique (GEOMETRIC_CONNECTIVITY)
+
+#### Principe
+
+Les fichiers IFC n'exportent généralement pas les relations de connectivité réseau (`IfcRelConnectsPortToElement`, ports de raccordement). Le moteur ne s'y fie pas. Il vérifie la connectivité **uniquement par la géométrie** : un appareil physiquement raccordé touche ou frôle son réseau. Un écart mesurable révèle un problème de modélisation.
+
+> **Règle fondamentale** : la géométrie est la source de vérité. Les relations IFC sont des annotations optionnelles — leur absence ne bloque pas la vérification.
+
+#### Algorithme
+
+```
+Pour chaque équipement E de type source (ex. IfcSanitaryTerminal) :
+
+  1. Pré-filtre spatial
+     candidats ← spatialIndex.queryRadius(E.bbox.center, rayon_recherche)
+     réseau    ← candidats filtrés par types cibles (ex. IfcPipeSegment)
+
+  2. Test de présence
+     si réseau est vide :
+       → ERREUR : "aucun réseau d'évacuation détecté à proximité"
+
+  3. Distance surface-à-surface
+     distMin ← min( distance_mesh_à_mesh(E.mesh, r.mesh) pour r dans réseau )
+
+  4. Décision
+     si distMin > seuil :
+       → ERREUR : "raccordement non effectif — écart de {distMin} mm (seuil : {seuil} mm)"
+     sinon :
+       → OK
+```
+
+**Pas de point de connexion prédéfini.** La distance minimale entre les deux maillages est calculée directement — elle est nulle ou quasi-nulle quand les éléments sont raccordés, mesurable quand ils ne le sont pas.
+
+#### Illustration — WC non raccordé à l'évacuation
+
+![WC non raccordé à l'évacuation](images/wc-drain-disconnect.png)
+
+*Le WC est positionné au centre du local. L'évacuation (symbole de raccordement en bas à gauche) est à plus d'un mètre du bas du maillage sanitaire. Distance surface-à-surface mesurée : ~1 400 mm. Seuil : 150 mm. Résultat : ERREUR.*
+
+Ce type d'erreur est **invisible sur un plan 2D** et passe souvent inaperçu lors des contrôles visuels de la maquette. Le moteur le détecte automatiquement à l'ouverture du fichier.
+
+#### Catalogue — règles de connectivité prédéfinies
+
+| ID | Équipement source | Réseau cible | Seuil | Sévérité |
+|---|---|---|---|---|
+| `SANITARY_DRAIN_CONNECTION` | `IfcSanitaryTerminal` | `IfcPipeSegment`, `IfcPipeFitting` | 150 mm | Erreur |
+| `HVAC_DUCT_CONNECTION` | `IfcAirTerminalBox`, `IfcFan` | `IfcDuctSegment`, `IfcDuctFitting` | 200 mm | Erreur |
+| `HEATING_PIPE_CONNECTION` | `IfcSpaceHeater`, `IfcRadiator` | `IfcPipeSegment` | 100 mm | Erreur |
+| `ELECTRICAL_PANEL_CIRCUIT` | `IfcElectricDistributionBoard` | `IfcCableSegment` | 300 mm | Avertissement |
+| `PUMP_PIPE_CONNECTION` | `IfcPump`, `IfcValve` | `IfcPipeSegment` | 50 mm | Erreur |
+| `LUMINAIRE_CABLE_CONNECTION` | `IfcLightFixture` | `IfcCableSegment` | 300 mm | Avertissement |
+
+#### Implémentation technique
+
+- **Phase 0** : approximation vertex-à-vertex, O(n×m) sur les maillages pré-filtrés par le SpatialIndex — précision suffisante, performance acceptable sur des voisinages réduits
+- **Phase 2** : remplacement par `three-mesh-bvh` derrière `SpatialIndex.queryMeshDistance()` — distance exacte en O(log n), temps réel sur modèles lourds
+- Le SceneGraph conserve les références `THREE.Mesh` en mémoire précisément pour permettre ces calculs
+
 ### Règles utilisateur
 
 - Créées via l'éditeur de règles (section 8)
