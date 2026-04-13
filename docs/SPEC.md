@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.5 — Avril 2026  
+> Version 4.6 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -468,6 +468,62 @@ Organisées selon 3 axes de catégorisation :
 - Partageables entre utilisateurs (export/import)
 - Possibilité de contribution au catalogue commun
 
+### Famille de règles : Connectivité géométrique (GEOMETRIC_CONNECTIVITY)
+
+#### Principe
+
+Les fichiers IFC n'exportent généralement pas les relations de connectivité réseau (`IfcRelConnectsPortToElement`, ports de raccordement). Le moteur ne s'y fie pas. Il vérifie la connectivité **uniquement par la géométrie** : un appareil physiquement raccordé touche ou frôle son réseau. Un écart mesurable révèle un problème de modélisation.
+
+> **Règle fondamentale** : la géométrie est la source de vérité. Les relations IFC sont des annotations optionnelles — leur absence ne bloque pas la vérification.
+
+#### Algorithme
+
+```
+Pour chaque équipement E de type source (ex. IfcSanitaryTerminal) :
+
+  1. Pré-filtre spatial
+     candidats ← spatialIndex.queryRadius(E.bbox.center, rayon_recherche)
+     réseau    ← candidats filtrés par types cibles (ex. IfcPipeSegment)
+
+  2. Test de présence
+     si réseau est vide :
+       → ERREUR : "aucun réseau d'évacuation détecté à proximité"
+
+  3. Distance surface-à-surface
+     distMin ← min( queryMeshDistance(E, r) pour r dans réseau )
+
+  4. Décision
+     si distMin > seuil :
+       → ERREUR : "raccordement non effectif — écart de {distMin} mm (seuil : {seuil} mm)"
+     sinon :
+       → OK
+```
+
+**Pas de point de connexion prédéfini.** La distance minimale entre les deux maillages est calculée directement — elle est nulle ou quasi-nulle quand les éléments sont raccordés, mesurable quand ils ne le sont pas.
+
+#### Illustration — WC non raccordé à l'évacuation
+
+*Le WC est positionné au centre du local. L'évacuation est à plus d'un mètre du bas du maillage sanitaire. Distance surface-à-surface mesurée : ~1 400 mm. Seuil : 150 mm. Résultat : ERREUR.*
+
+Ce type d'erreur est **invisible sur un plan 2D** et passe souvent inaperçu lors des contrôles visuels de la maquette. Le moteur le détecte automatiquement à l'ouverture du fichier.
+
+#### Catalogue — règles de connectivité prédéfinies
+
+| ID | Équipement source | Réseau cible | Seuil | Sévérité |
+|---|---|---|---|---|
+| `SANITARY_DRAIN_CONNECTION` | `IfcSanitaryTerminal` | `IfcPipeSegment`, `IfcPipeFitting` | 150 mm | Erreur |
+| `HVAC_DUCT_CONNECTION` | `IfcAirTerminalBox`, `IfcFan` | `IfcDuctSegment`, `IfcDuctFitting` | 200 mm | Erreur |
+| `HEATING_PIPE_CONNECTION` | `IfcSpaceHeater`, `IfcRadiator` | `IfcPipeSegment` | 100 mm | Erreur |
+| `ELECTRICAL_PANEL_CIRCUIT` | `IfcElectricDistributionBoard` | `IfcCableSegment` | 300 mm | Avertissement |
+| `PUMP_PIPE_CONNECTION` | `IfcPump`, `IfcValve` | `IfcPipeSegment` | 50 mm | Erreur |
+| `LUMINAIRE_CABLE_CONNECTION` | `IfcLightFixture` | `IfcCableSegment` | 300 mm | Avertissement |
+
+#### Implémentation technique
+
+- **Phase 0** : approximation vertex-à-vertex, O(n×m) sur les maillages pré-filtrés par le SpatialIndex — précision suffisante, performance acceptable sur des voisinages réduits
+- **Phase 2** : remplacement par `three-mesh-bvh` derrière `SpatialIndex.queryMeshDistance()` — distance exacte en O(log n), temps réel sur modèles lourds
+- Le SceneGraph conserve les références de maillage en mémoire précisément pour permettre ces calculs
+
 ### Structure d'une règle du catalogue
 
 Chaque règle du catalogue possède une structure minimale stable. Cette structure sera enrichie au fil du développement.
@@ -780,6 +836,10 @@ tool measureClearance(
 ): number                                                             // mètres
 tool measureVolume(objectId: string): number                          // m³
 tool measureSurface(objectId: string): number                         // m²
+tool queryMeshDistance(
+  objectId1: string,
+  objectId2: string
+): number                                                             // mm — distance surface-à-surface exacte entre maillages
 
 // — Informations —
 tool getObjectProperties(objectId: string): Properties
@@ -1306,3 +1366,6 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **Référence fabricant** | Identifiant produit présent dans le nom ou le tag d'un objet IFC (ex : "WOYA060LFCA"), utilisé par l'agent pour interroger les spécifications techniques réelles et détecter les anomalies de modélisation. |
 | **Vérification de complétude** | Contrôle que tous les éléments requis par la réglementation ou les règles du catalogue sont présents dans un local, à partir de son type fonctionnel identifié depuis son contenu (object-first). |
 | **Adjacence sémantique** | Vérification de la compatibilité fonctionnelle entre locaux voisins (ex : WC non contigu à un espace de repas) — va au-delà de la proximité géométrique pour évaluer la cohérence réglementaire du voisinage. |
+| **GEOMETRIC_CONNECTIVITY** | Famille de règles vérifiant la connectivité des équipements à leurs réseaux (plomberie, CVC, électrique) par distance surface-à-surface entre maillages — sans dépendre des relations IFC déclarées. |
+| **queryMeshDistance** | Outil MCP calculant la distance minimale surface-à-surface entre les maillages géométriques de deux objets (en mm). Fondement de la vérification GEOMETRIC_CONNECTIVITY. Phase 0 : approximation vertex, Phase 2 : BVH exact. |
+| **Distance surface-à-surface** | Distance minimale entre les surfaces géométriques réelles de deux objets, distincte de la distance entre leurs centres ou leurs bbox. Nulle quand deux éléments se touchent, mesurable quand ils sont déconnectés. |
