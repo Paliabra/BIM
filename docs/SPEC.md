@@ -596,6 +596,44 @@ Chaque règle du catalogue possède une structure minimale stable. Cette structu
 
 Les paramètres (`params`) sont les **seuls éléments modifiables** lors d'un fork. La logique spatiale reste celle de la règle source.
 
+### Famille de règles : Risques pathologiques (PATHOLOGICAL_RISK)
+
+#### Principe
+
+Ces règles ne vérifient pas une non-conformité réglementaire immédiate — elles détectent des configurations qui génèrent des **sinistres à moyen terme** (2–10 ans). Leur résultat est toujours une matrice de risque (Probabilité / Gravité / Délai / Action), jamais un simple booléen conforme/non-conforme.
+
+**Règle fondamentale** : beaucoup de ces éléments (joints de dilatation, SPEC, rupteurs thermiques) ne sont **pas modélisés** dans les maquettes IFC courantes. La règle ne suppose jamais leur présence — elle consulte le CCTP, et si non documenté, émet un flag `NON-VÉRIFIABLE` avec l'action requise.
+
+#### Catalogue
+
+| ID | Zone de risque | Pathologie | Détection | Vérifiabilité |
+|---|---|---|---|---|
+| `THERMAL_BRIDGE_BALCONY` | Jonction dalle balcon / façade | Condensation → moisissures | Absence de rupteur thermique dans le modèle / CCTP | NON-VÉRIFIABLE si absent |
+| `SHOWER_PARTITION_SEAL` | Colonne douche sur cloison légère | Infiltration par fissure joint | Type de cloison + SPEC au CCTP | NON-VÉRIFIABLE si absent |
+| `EXPANSION_JOINT_MISSING` | Grande surface carrelage / façade | Soulèvement / fissuration | Surface > 8 m linéaires sans joint documenté | NON-VÉRIFIABLE si absent |
+| `TRADE_INTERFACE_PIPE_STRUCT` | Passage tuyau dans élément porteur | Fragilisation structurelle | `queryMeshDistance(tuyau, porteur) < 50mm` | VISIBLE si clash détecté |
+| `GALVANIC_CORROSION` | Métaux différents en contact | Corrosion silencieuse | `getObjectProperties` → matériaux adjacents incompatibles | DOCUMENTÉ si CCTP précise matériaux |
+| `FIRE_STOP_PENETRATION` | Passage de gaine en zone coupe-feu | Propagation incendie | Absence de clapet coupe-feu au CCTP | NON-VÉRIFIABLE si absent |
+| `ACOUSTIC_PARTITION_PIPE` | Robinetterie sur paroi mince | Nuisances sonores transmises | Type paroi + DTU 45.2 seuils | VISIBLE (type cloison) + NON-VÉRIFIABLE (mesure acoustique) |
+
+#### Format de sortie spécifique
+
+Les règles PATHOLOGICAL_RISK produisent une matrice de risque, non un simple résultat conforme/non-conforme :
+
+```json
+{
+  "zone": "SDB A101 — cloison douche",
+  "pathologie": "Infiltration par fissure progressive joint silicone",
+  "probabilite": "Élevée",
+  "gravite": "Majeure",
+  "delai_estime": "3–7 ans",
+  "verificabilite": "NON-VÉRIFIABLE",
+  "source_manquante": "SPEC absent du CCTP et non modélisé",
+  "reference_dtu": "DTU 52.2 — SPEC obligatoire sur paroi projetée",
+  "action": "SPEC totale + renfort cloison avant corps d'état carrelage"
+}
+```
+
 ### Fork d'une règle du catalogue
 
 L'utilisateur peut à tout moment forker une règle du catalogue :
@@ -926,6 +964,12 @@ tool searchProductSpec(
 ): ProductSpec                      // dimensions réelles, poids, contraintes d'installation
 tool webSearch(query: string): SearchResult[]   // recherche documentaire générale
 
+// — Documents projet (CCTP, DPGF, notices, plans de détail) —
+tool searchProjectDocuments(
+  query: string,
+  types?: ('CCTP' | 'DPGF' | 'notice_technique' | 'plan_detail' | 'fiche_technique')[]
+): DocumentSearchResult[]           // extraits des documents liés au projet ouvert
+
 // — Vision (opt-in, nécessite connexion — voir §2) —
 tool renderObjectView(objectId: string, angles: ('front'|'top'|'iso')[]): ImageData[]
 tool renderSpaceView(spaceId: string): ImageData
@@ -958,6 +1002,52 @@ L'agent IA opère de la même façon :
 > Les visionneuses classiques vérifient des **données**. Cet agent vérifie des **intentions**.
 
 L'agent opère systématiquement en **logique object-first** : il part des objets physiques, identifiés par leur forme et leur type fonctionnel, et les relations spatiales sont calculées depuis leur géométrie réelle. L'`IfcSpace`, les noms de pièces, la hiérarchie Site/Bâtiment/Étage sont des informations secondaires, jamais des conditions bloquantes.
+
+#### Le concept de "casquette"
+
+L'agent adapte son expertise, sa méthodologie et son format de sortie à la mission qui lui est confiée. La maquette est son terrain — il s'y comporte comme l'expert désigné par la demande.
+
+| Casquette | Déclenchement | Ce qu'il cherche | Format de sortie |
+|---|---|---|---|
+| **Inspecteur PMR** | "Vérifie l'accessibilité" | Dimensions, dégagements, conformité Arrêté 2015 | Constat / Mesure / Risque / Préconisation |
+| **Expert sinistralité** | "Analyse les risques de sinistre" | Interfaces fragiles, matériaux incompatibles, pathologies futures | Matrice de risque : Pathologie / Probabilité / Gravité / Action |
+| **Coordinateur BIM** | "Détecte les conflits" | Clashes géométriques, incohérences inter-disciplines | Liste de conflits classés par sévérité |
+| **Acousticien** | "Vérifie les nuisances sonores" | Transmissions vibratoires, parois insuffisantes | Rapport par local avec valeurs calculées |
+
+La casquette ne change pas les outils — elle change la **grille de lecture** appliquée à la même maquette.
+
+#### Principe d'honnêteté épistémique — ce que l'agent ne peut pas voir
+
+Les maquettes IFC sont rarement modélisées au niveau de détail suffisant pour montrer tous les éléments techniques fins : joints de dilatation, enduits d'étanchéité, bandes de renfort, cales de vitrage, etc. **L'agent ne comble jamais un vide visuel par une hypothèse.**
+
+Sa démarche face à un élément non visible est systématiquement la suivante :
+
+```
+Élément requis non visible dans le modèle (ex. joint de dilatation)
+    ↓
+① Cherche dans les documents projet
+   searchProjectDocuments("joint de dilatation carrelage", ['CCTP', 'plan_detail'])
+    ↓
+② Résultat A — trouvé dans le CCTP :
+   "DTU 52.2 §4.3 : joints prévus tous les 8 m — prévu à l'exécution"
+   → Flag DOCUMENTÉ : "spécifié au CCTP, non modélisé —
+     à contrôler obligatoirement en phase chantier"
+
+   Résultat B — non trouvé dans aucun document :
+   → Flag NON-VÉRIFIABLE : "absent du modèle et des documents projet —
+     DTU 52.2 exige des joints tous les 8 m sur cette surface (15 m linéaires) —
+     risque de fissuration à 2–3 ans — point à traiter avant validation DCE"
+```
+
+**Trois états épistémiques — jamais d'hypothèse :**
+
+| État | Définition | Comportement de l'agent |
+|---|---|---|
+| **VISIBLE** | Observable et mesurable dans le modèle | Mesure exacte, conclusion directe |
+| **DOCUMENTÉ** | Non visible mais spécifié dans CCTP / plans de détail | Cite la source, flag "à contrôler en exécution" |
+| **NON-VÉRIFIABLE** | Ni visible ni documenté | Flag explicite + référence DTU/norme + action requise avant validation |
+
+> Un rapport sans flag NON-VÉRIFIABLE sur une mission pathologie est un rapport incomplet. L'absence de preuve n'est pas une preuve d'absence.
 
 ---
 
@@ -1289,6 +1379,138 @@ Mission : "Vérifie la conformité PMR des logements"
 ```
 
 L'ordre d'inspection pour chaque type de mission (PMR, sécurité incendie, acoustique...) est **défini dans le catalogue de règles** — l'agent ne l'improvise pas, il le suit comme l'inspecteur suit sa checklist réglementaire.
+
+---
+
+#### Exemple 2 — Expert sinistralité : le "profiler" de pathologies
+
+Même maquette, même agent, casquette différente. L'expert sinistralité ne cherche pas des non-conformités réglementaires immédiates — il traque ce qui va mal tourner dans 5 ou 10 ans.
+
+> *"Je travaille comme un profiler : je cherche les zones de stress, les mariages de matériaux incompatibles et les détails qui défient les lois de la physique."*
+
+**→ L'agent adopte cette grille de lecture dès réception de la mission.**
+
+---
+
+**Analyse 1 — Points de rosée et étanchéité**
+
+> *"L'eau est responsable de 90% des sinistres. Je traque les ponts thermiques. Un balcon mal isolé, c'est de la condensation assurée."*
+
+**→ L'agent :**
+
+```
+renderSpaceView('balcon_A301') + getObjectProperties('dalle_balcon')
+→ voit la dalle : traverse-t-elle le plan de façade sans rupture ?
+→ getObjectRelations('dalle_balcon') → adjacente à 'isolation_facade' ?
+
+Cas détecté : aucun objet rupteur thermique entre dalle et façade
+    ↓
+searchProjectDocuments("rupteur thermique balcon", ['CCTP', 'plan_detail'])
+→ Non trouvé
+    ↓
+Flag NON-VÉRIFIABLE :
+"Pont thermique potentiel — dalle balcon sans rupteur identifiable.
+ RT 2012 / RE 2020 : Ψ ≤ 0.50 W/(m·K) pour jonction dalle/balcon.
+ Risque : condensation intérieure + moisissures en 3–5 ans.
+ Action : fournir note de calcul thermique ou plan de détail avant DCE."
+```
+
+---
+
+**Analyse 2 — Interfaces de métiers : là où un artisan s'arrête**
+
+> *"Le sinistre naît souvent là où un artisan s'arrête et où l'autre commence."*
+
+**→ L'agent cherche spécifiquement les zones de jonction entre disciplines :**
+
+```
+renderSpaceView('sdb_A101')
+→ identifie : douche positionnée contre cloison légère (mur couloir)
+→ getObjectProperties('cloison_couloir') → BA13 simple peau, 72mm
+
+Analyse croisée :
+  Type cloison    : légère, soumise aux micro-vibrations
+  Usage adjacent  : colonne de douche avec alimentation eau sous pression
+  Vibrations      : chaque usage génère micro-mouvements dans la cloison
+    ↓
+Projection pathologique :
+  Micro-mouvement → fissure progressive du joint silicone / carrelage
+  → infiltration invisible derrière cloison
+  → dégât des eaux sur logement inférieur : délai estimé 3–7 ans
+
+searchProjectDocuments("SPEC douche cloison", ['CCTP'])
+→ Non trouvé
+    ↓
+Flag NON-VÉRIFIABLE :
+"SPEC (Système Périmétral d'Étanchéité Carrelage) non spécifié au CCTP.
+ DTU 52.2 l'exige sur toute paroi recevant une colonne de douche.
+ Sur cloison légère : renfort structural requis en complément.
+ Risque sinistre : Élevé / Gravité : Majeure / Délai : 3–7 ans."
+```
+
+---
+
+**Analyse 3 — Silent Killers : ce qui travaille en silence**
+
+> *"Si je ne vois pas de joints de dilatation sur une grande surface de carrelage, je prédis une fissure à 2 ans."*
+
+**→ Ici le modèle ne montre pas les joints — l'agent ne suppose pas qu'ils existent :**
+
+```
+renderSpaceView('hall_rdc') → surface carrelage estimée visuellement : ~40 m²
+getObjectBBox('carrelage_hall') → L : 12.4 m, l : 3.2 m
+
+Joints de dilatation visibles dans le modèle ? → Non (niveau de détail insuffisant)
+    ↓
+searchProjectDocuments("joint de dilatation carrelage hall", ['CCTP', 'plan_detail'])
+→ Non trouvé
+    ↓
+Flag NON-VÉRIFIABLE :
+"Joints de dilatation non modélisés et absents du CCTP.
+ DTU 52.2 : joints obligatoires tous les 8 m et en périphérie.
+ Surface de 40 m² (12,4 m) sans joint documenté.
+ Risque : soulèvement / fissuration du carrelage à 2–3 ans.
+ Action requise avant validation DCE."
+```
+
+---
+
+**Format de sortie — Matrice de risque sinistralité**
+
+L'expert pathologie produit une matrice, pas une liste de non-conformités :
+
+```
+RAPPORT SINISTRALITÉ — Bâtiment A
+═══════════════════════════════════════════════════════════════
+Zone              : SDB A101 — Cloison douche / couloir
+Pathologie        : Infiltration par fissure progressive joint silicone
+Probabilité       : Élevée
+Gravité           : Majeure (dégât des eaux logement inférieur)
+Délai estimé      : 3–7 ans sans intervention
+Vérifiabilité     : NON-VÉRIFIABLE (SPEC absent du CCTP et du modèle)
+Référence         : DTU 52.2 — SPEC obligatoire sur paroi recevant projection
+Action préventive : SPEC totale + renfort cloison avant corps d'état carrelage
+
+───────────────────────────────────────────────────────────────
+Zone              : Hall RDC — Surface carrelage 40 m²
+Pathologie        : Soulèvement / fissuration par dilatation thermique
+Probabilité       : Élevée
+Gravité           : Modérée (reprise carrelage)
+Délai estimé      : 2–3 ans
+Vérifiabilité     : NON-VÉRIFIABLE (joints absents modèle et CCTP)
+Référence         : DTU 52.2 §5.4 — joint tous les 8 m
+Action préventive : Intégrer joints au plan d'exécution carrelage
+
+───────────────────────────────────────────────────────────────
+Zone              : Balcon A301 — Jonction dalle/façade
+Pathologie        : Pont thermique → condensation → moisissures
+Probabilité       : Moyenne (dépend isolation globale)
+Gravité           : Modérée à Majeure
+Délai estimé      : 3–5 ans
+Vérifiabilité     : NON-VÉRIFIABLE (rupteur thermique non documenté)
+Référence         : RE 2020 — Ψ ≤ 0.50 W/(m·K) jonction balcon
+Action préventive : Note de calcul thermique + plan de détail jonction
+```
 
 ---
 
