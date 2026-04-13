@@ -483,7 +483,7 @@ Pour chaque équipement E de type source (ex. IfcSanitaryTerminal) :
        → ERREUR : "aucun réseau d'évacuation détecté à proximité"
 
   3. Distance surface-à-surface
-     distMin ← min( distance_mesh_à_mesh(E.mesh, r.mesh) pour r dans réseau )
+     distMin ← min( queryMeshDistance(E, r) pour r dans réseau )
 
   4. Décision
      si distMin > seuil :
@@ -517,70 +517,64 @@ Ce type d'erreur est **invisible sur un plan 2D** et passe souvent inaperçu lor
 
 - **Phase 0** : approximation vertex-à-vertex, O(n×m) sur les maillages pré-filtrés par le SpatialIndex — précision suffisante, performance acceptable sur des voisinages réduits
 - **Phase 2** : remplacement par `three-mesh-bvh` derrière `SpatialIndex.queryMeshDistance()` — distance exacte en O(log n), temps réel sur modèles lourds
-- Le SceneGraph conserve les références `THREE.Mesh` en mémoire précisément pour permettre ces calculs
+- Le SceneGraph conserve les références de maillage en mémoire précisément pour permettre ces calculs
 
-### Règles utilisateur
-
-- Créées via l'éditeur de règles (section 8)
-- Sauvegardées dans le fichier projet et **réutilisables sur d'autres modèles**
-- Partageables entre utilisateurs (export/import)
-- Possibilité de contribution au catalogue commun
-
-### Famille de règles : Connectivité géométrique (GEOMETRIC_CONNECTIVITY)
+### Famille de règles : Conformité dimensionnelle fabricant (DIMENSIONAL_CONFORMITY)
 
 #### Principe
 
-Les fichiers IFC n'exportent généralement pas les relations de connectivité réseau (`IfcRelConnectsPortToElement`, ports de raccordement). Le moteur ne s'y fie pas. Il vérifie la connectivité **uniquement par la géométrie** : un appareil physiquement raccordé touche ou frôle son réseau. Un écart mesurable révèle un problème de modélisation.
+Les équipements MEP sont fréquemment modélisés en `IfcBuildingElementProxy` ou avec un type IFC générique, sans import des dimensions réelles du fabricant. La référence produit est présente dans le nom ou les PSets de l'objet IFC. Le moteur extrait cette référence, interroge les spécifications techniques réelles, et compare avec la bbox modélisée.
 
-> **Règle fondamentale** : la géométrie est la source de vérité. Les relations IFC sont des annotations optionnelles — leur absence ne bloque pas la vérification.
+Cette vérification opère en **deux temps liés** : un écart dimensionnel entraîne automatiquement une vérification de containment, car un objet surdimensionné est presque toujours hors de son local.
 
 #### Algorithme
 
 ```
-Pour chaque équipement E de type source (ex. IfcSanitaryTerminal) :
+Pour chaque objet O dont le nom ou le tag contient une référence fabricant :
 
-  1. Pré-filtre spatial
-     candidats ← spatialIndex.queryRadius(E.bbox.center, rayon_recherche)
-     réseau    ← candidats filtrés par types cibles (ex. IfcPipeSegment)
+  1. Extraction de la référence
+     ref ← extraire_référence(O.name, O.psets)   // ex. "WOYA060LFCA"
 
-  2. Test de présence
-     si réseau est vide :
-       → ERREUR : "aucun réseau d'évacuation détecté à proximité"
+  2. Interrogation spécifications réelles
+     spec ← searchProductSpec(ref)
+     si spec vide : spec ← webSearch(ref + " dimensions fiche technique")
+     si spec toujours vide : → AVERTISSEMENT "référence non résolue"
 
-  3. Distance surface-à-surface
-     distMin ← min( queryMeshDistance(E, r) pour r dans réseau )
+  3. Comparaison dimensionnelle
+     bboxIFC  ← getObjectBBox(O)
+     facteurs ← [ bboxIFC.L / spec.L, bboxIFC.H / spec.H, bboxIFC.P / spec.P ]
+     si max(facteurs) > seuil_erreur (ex. 1.5) :
+       → ERREUR "dimensions non conformes — facteur ×{max(facteurs):.1f} vs fabricant"
+     elif max(facteurs) > seuil_avertissement (ex. 1.15) :
+       → AVERTISSEMENT "dimensions suspectes — facteur ×{max(facteurs):.1f}"
 
-  4. Décision
-     si distMin > seuil :
-       → ERREUR : "raccordement non effectif — écart de {distMin} mm (seuil : {seuil} mm)"
-     sinon :
-       → OK
+  4. Vérification de containment (cascade automatique si erreur ①)
+     espace ← queryContained(O) → espace déclaré de O
+     si O.bbox ⊄ espace.bbox :
+       → ERREUR "objet hors de son local — conséquence probable de ①"
 ```
 
-**Pas de point de connexion prédéfini.** La distance minimale entre les deux maillages est calculée directement — elle est nulle ou quasi-nulle quand les éléments sont raccordés, mesurable quand ils ne le sont pas.
+**Le point clé** : l'objet n'a pas besoin d'avoir ses dimensions correctement exportées dans l'IFC. La référence fabricant dans le nom suffit pour déclencher la vérification.
 
-#### Illustration — WC non raccordé à l'évacuation
+#### Illustration — Équipement Daikin WOYA060LFCA mal dimensionné
 
-*Le WC est positionné au centre du local. L'évacuation est à plus d'un mètre du bas du maillage sanitaire. Distance surface-à-surface mesurée : ~1 400 mm. Seuil : 150 mm. Résultat : ERREUR.*
+![Équipement WOYA060LFCA hors gabarit et hors de son local](images/woya-dimension-error.png)
 
-Ce type d'erreur est **invisible sur un plan 2D** et passe souvent inaperçu lors des contrôles visuels de la maquette. Le moteur le détecte automatiquement à l'ouverture du fichier.
+*L'objet `WOYA060LFCA` (groupe extérieur Daikin VRV 6HP) est modélisé en `IfcBuildingElementProxy`. Sa bbox IFC mesure L 3 100mm × H 2 800mm × P 3 100mm. Les dimensions réelles du produit sont L 930mm × H 1 345mm × P 320mm. Facteur d'écart : ×3 à ×9 selon l'axe. L'objet déborde largement du local technique et intersecte la structure. Résultat : deux flags liés — dimensions non conformes + objet hors de son local.*
 
-#### Catalogue — règles de connectivité prédéfinies
+La cause racine est unique : **l'équipement a été modélisé sans import des dimensions réelles du fabricant**. Le flag de position est une conséquence du flag dimensionnel, pas une erreur indépendante.
 
-| ID | Équipement source | Réseau cible | Seuil | Sévérité |
+#### Catalogue — règles de conformité dimensionnelle prédéfinies
+
+| ID | Déclencheur | Source de vérité | Seuil erreur | Sévérité |
 |---|---|---|---|---|
-| `SANITARY_DRAIN_CONNECTION` | `IfcSanitaryTerminal` | `IfcPipeSegment`, `IfcPipeFitting` | 150 mm | Erreur |
-| `HVAC_DUCT_CONNECTION` | `IfcAirTerminalBox`, `IfcFan` | `IfcDuctSegment`, `IfcDuctFitting` | 200 mm | Erreur |
-| `HEATING_PIPE_CONNECTION` | `IfcSpaceHeater`, `IfcRadiator` | `IfcPipeSegment` | 100 mm | Erreur |
-| `ELECTRICAL_PANEL_CIRCUIT` | `IfcElectricDistributionBoard` | `IfcCableSegment` | 300 mm | Avertissement |
-| `PUMP_PIPE_CONNECTION` | `IfcPump`, `IfcValve` | `IfcPipeSegment` | 50 mm | Erreur |
-| `LUMINAIRE_CABLE_CONNECTION` | `IfcLightFixture` | `IfcCableSegment` | 300 mm | Avertissement |
+| `MANUFACTURER_DIM_MISMATCH` | Référence fabricant dans nom/PSets | `searchProductSpec` → `webSearch` | facteur > 1.5 | Erreur |
+| `OBJECT_OUT_OF_CONTAINER` | Cascade après `MANUFACTURER_DIM_MISMATCH` | `queryContained` | bbox ⊄ espace | Erreur |
+| `PROXY_NO_DIMENSIONS` | `IfcBuildingElementProxy` sans référence | — | bbox > 5m sur un axe | Avertissement |
 
-#### Implémentation technique
+La règle `PROXY_NO_DIMENSIONS` est un filet de sécurité pour les objets sans référence identifiable mais dont la taille est manifestement aberrante.
 
-- **Phase 0** : approximation vertex-à-vertex, O(n×m) sur les maillages pré-filtrés par le SpatialIndex — précision suffisante, performance acceptable sur des voisinages réduits
-- **Phase 2** : remplacement par `three-mesh-bvh` derrière `SpatialIndex.queryMeshDistance()` — distance exacte en O(log n), temps réel sur modèles lourds
-- Le SceneGraph conserve les références de maillage en mémoire précisément pour permettre ces calculs
+---
 
 ### Structure d'une règle du catalogue
 
@@ -1247,6 +1241,10 @@ Résultat :
 ② Position incorrecte — conséquence probable de l'anomalie ①
 → Cause probable : objet modélisé sans import des dimensions réelles du fabricant
 ```
+
+![Équipement WOYA060LFCA hors gabarit et hors de son local](../docs/images/woya-dimension-error.png)
+
+*L'objet cyan dans la vue 3D est la bbox IFC réelle de l'équipement : elle dépasse largement le local technique et intersecte la structure. Le panneau propriétés confirme la référence `WOYA060LFCA` — suffisante pour résoudre les dimensions réelles et constater l'écart.*
 
 Cette vérification s'applique à **tout équipement dont la référence est identifiable** — équipements CVC, électriques, sanitaires, équipements de levage, etc. Elle ne nécessite aucune configuration préalable : l'agent reconnaît le pattern de référence fabricant dans le nom de l'objet.
 
