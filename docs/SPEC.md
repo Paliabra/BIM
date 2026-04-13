@@ -1121,7 +1121,176 @@ Résultats disponibles dans le SceneGraph
 
 ---
 
-### 17.3 Agent de Vérification Intelligent
+### 17.3 Agent de Vérification — Le modèle comportemental
+
+#### Le modèle de référence : l'expert en visite de terrain
+
+La meilleure façon de comprendre le comportement de l'agent est de l'illustrer à travers un exemple concret. L'échange suivant est issu d'un test réel demandant à un LLM d'endosser le rôle d'un inspecteur PMR. La réponse obtenue est annotée ligne par ligne pour montrer exactement comment notre agent traduit chaque geste de l'inspecteur en outils MCP et en mesures exactes.
+
+> **Prompt de référence :**
+> *"Tu es missionné pour une inspection PMR d'un ensemble de construction. Tu imagines que le bâtiment est construit et tu t'y rends pour faire ton travail. Décris comment tu procèdes."*
+
+---
+
+**Phase 1 — Préparation et outillage**
+
+> *"Avant de descendre de voiture, je m'assure d'avoir mon kit de l'inspecteur : télémètre laser (précision au millimètre), inclinomètre numérique (pour les pentes), dynamomètre (force d'ouverture des portes, max 50 N), gabarit de rotation (cercle 1,50m), tablette avec la maquette BIM pour comparer le 'tel que construit' avec le 'conçu'."*
+
+**→ L'agent n'a pas de kit physique. Ses instruments sont les outils MCP :**
+
+| Outil physique de l'inspecteur | Outil MCP de l'agent |
+|---|---|
+| Télémètre laser | `measureDistance()`, `measureClearance()` |
+| Inclinomètre numérique | `measureSlope()` |
+| Dynamomètre (force d'ouverture) | `getObjectProperties()` → PSets (si exporté) |
+| Gabarit de rotation 1,50 m | `measureClearance(espace, 'rotation_150')` |
+| Tablette BIM pour comparer | SceneGraph — l'agent n'est pas *à côté* du modèle : **il est dedans** |
+
+**Différence fondamentale :** l'inspecteur *estime* visuellement avant de sortir son télémètre. L'agent *voit* d'abord via `renderSpaceView()`, puis *mesure exactement* — jamais d'estimation, toujours une valeur en millimètres.
+
+---
+
+**Phase 2 — Cheminement extérieur et accès**
+
+> *"Mon inspection commence sur le trottoir. La place PMR fait-elle bien 3,30 m de large ? Le cheminement : pente < 5% ? Revêtement non glissant ?"*
+
+**→ L'agent :**
+
+```
+renderSpaceView('parking_exterieur')
+→ voit les places de stationnement, identifie la place PMR (marquage, dimensions relatives)
+
+measureDistance(place_PMR, 'largeur') = 3.42 m  ✓  (requis : 3.30 m)
+measureSlope(cheminement_entree)      = 3.2%    ✓  (requis : < 5%)
+```
+
+L'inspecteur "voit que ça a l'air plat". L'agent mesure : 3,2%. Il ne suppose rien.
+
+---
+
+**Phase 3 — Parties communes**
+
+> *"Devant le hall : la platine d'interphonie est-elle entre 0,90 m et 1,30 m ? La porte : espace de manœuvre de 2,20 m devant ? L'ascenseur : cabine 1,10 m × 1,40 m minimum ?"*
+
+**→ L'agent :**
+
+```
+renderSpaceView('hall_entree')
+→ voit le hall, l'interphonie, la porte d'entrée, la cage d'ascenseur
+
+getObjectBBox('interphonie_hall')
+→ hauteur bas : 0.95 m ✓ / hauteur haut : 1.25 m ✓  (requis : 0.90–1.30 m)
+
+measureClearance('porte_hall', 'devant') = 2.25 m  ✓  (requis : 2.20 m)
+
+getObjectBBox('cabine_ascenseur')
+→ L : 1.12 m ✓  P : 1.45 m ✓  (requis : 1.10 m × 1.40 m)
+```
+
+---
+
+**Phase 4 — Unité de vie : l'analyse chirurgicale**
+
+> *"C'est ici que l'analyse devient chirurgicale. Je vérifie : l'aire de rotation (cercle 1,50 m hors débattement de porte et hors équipements fixes), les passages (≥ 90 cm), les ressauts (≤ 2 cm), l'espace d'usage côté WC (0,80 m × 1,30 m)."*
+
+**→ L'agent — logement A101, salle de bain :**
+
+```
+renderSpaceView('sdb_A101')
+→ voit : WC, lavabo, douche, porte (sens d'ouverture vers intérieur)
+→ identifie visuellement : espace contraint, lavabo proche du WC
+
+measureClearance('sdb_A101', 'rotation_150') = 1.32 m  ✗  (requis : 1.50 m)
+→ ERREUR : aire de rotation insuffisante — 18 cm manquants
+
+measureClearance('wc_A101', 'lateral_gauche') = 0.75 m  ✗  (requis : 0.80 m)
+→ ERREUR : espace d'usage WC insuffisant
+
+measureClearance('porte_sdb_A101', 'largeur_passage') = 0.82 m  ✗  (requis : 0.90 m)
+→ ERREUR : passage de porte non conforme
+```
+
+L'inspecteur voit que "ça semble juste". L'agent mesure et confirme trois non-conformités distinctes, toutes quantifiées.
+
+---
+
+**Phase 5 — Rapport de conformité**
+
+> *"À la fin, je dresse un tableau de non-conformités : Constat / Risque / Préconisation."*
+
+**→ L'agent produit le même format, avec la mesure exacte en plus :**
+
+```
+LOGEMENT A101 — Salle de bain
+─────────────────────────────────────────────────────────────
+Non-conformité 1 — Aire de rotation insuffisante
+  Constat       : Diamètre libre de rotation = 1,32 m
+  Mesure exacte : 1,32 m mesuré / 1,50 m requis (Arrêté 24/12/2015)
+  Risque        : Impossibilité de manœuvrer en fauteuil sans
+                  déplacer des équipements
+  Préconisation : Réduire la profondeur du lavabo ou repositionner
+                  le WC de 18 cm vers la cloison opposée
+
+Non-conformité 2 — Espace d'usage WC
+  Constat       : Dégagement latéral WC = 0,75 m côté gauche
+  Mesure exacte : 0,75 m mesuré / 0,80 m requis
+  Risque        : Transfert depuis fauteuil impossible côté gauche
+  Préconisation : Décaler le WC de 5 cm vers la droite
+
+Non-conformité 3 — Largeur de passage porte salle de bain
+  Constat       : Largeur de passage = 0,82 m
+  Mesure exacte : 0,82 m mesuré / 0,90 m requis
+  Risque        : Passage en fauteuil impossible
+  Préconisation : Remplacer par une porte à galandage ou élargir
+                  le tableau de 8 cm
+```
+
+---
+
+#### Ce que l'agent fait que l'inspecteur ne peut pas faire
+
+| | Inspecteur physique | Agent |
+|---|---|---|
+| Logements visités | 1 à la fois, ~2h par logement | Tous en parallèle |
+| Précision des mesures | Millimétrique (télémètre) | Millimétrique (outils MCP) |
+| Estimation visuelle | Oui — avant de mesurer | Non — mesure directement |
+| Oublis / fatigue | Possibles | Aucun — checklist exhaustive |
+| Traçabilité | Carnet de terrain | Rapport numérique avec valeurs exactes |
+| Cross-check données IFC | Manuel (tablette) | Automatique (SceneGraph) |
+
+L'agent ne remplace pas l'expertise de l'inspecteur — il **exécute sa méthodologie avec une précision et une exhaustivité impossibles à atteindre manuellement**.
+
+---
+
+#### La traversée systématique
+
+Pour chaque mission, l'agent suit la **logique de l'entonnoir** de l'inspecteur — du général vers le particulier :
+
+```
+Mission : "Vérifie la conformité PMR des logements"
+    ↓
+① Identification du scope
+   findByFunctionalType('logement') → 24 logements identifiés
+
+② Pour chaque logement — en entonnoir :
+   renderSpaceView(logement) → voit la configuration globale
+       ↓
+   Porte d'entrée → mesure largeur, EMP, ressaut
+       ↓
+   Circulations → mesure largeur couloirs, ressauts
+       ↓
+   Salle de bain → mesure rotation, dégagements WC, douche
+       ↓
+   Cuisine → mesure passage entre meubles
+
+③ Rapport consolidé
+   "24 logements inspectés. 11 non conformes.
+    37 non-conformités détectées. Détail par logement."
+```
+
+L'ordre d'inspection pour chaque type de mission (PMR, sécurité incendie, acoustique...) est **défini dans le catalogue de règles** — l'agent ne l'improvise pas, il le suit comme l'inspecteur suit sa checklist réglementaire.
+
+---
 
 #### Graphe d'objets enrichi
 
