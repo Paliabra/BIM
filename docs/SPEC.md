@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.4 — Avril 2026  
+> Version 4.5 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -77,6 +77,7 @@ Les exemples ci-dessous illustrent la logique du moteur. Ils ne définissent pas
 - **Déduire la surface nette réelle** d'une pièce en soustrayant les emprises des objets encombrants sélectionnés par l'utilisateur
 - **Vérifier la présence des équipements dans le cellier** en listant tous les objets contenus dans le volume du cellier, sans connaître leur type IFC à l'avance
 - **Détecter les équipements mal dimensionnés** en croisant la référence fabricant dans le nom de l'objet IFC avec les fiches techniques réelles — un `IfcBuildingElementProxy` nommé "WOYA060LFCA" dont la bbox est 9× supérieure aux dimensions Daikin est automatiquement signalé, même sans classification précise
+- **Vérifier la complétude réglementaire d'un local** en identifiant son type fonctionnel depuis son contenu (une toilette → WC), puis en vérifiant la présence de tous les éléments requis (porte, lave-mains) et la cohérence des locaux adjacents (WC non contigu à un espace de repas)
 
 ### Exemple détaillé — Vérification des équipements dans le cellier
 
@@ -1133,6 +1134,51 @@ Cette vérification s'applique à **tout équipement dont la référence est ide
 
 Quand `searchProductSpec` ne retourne pas de résultat structuré, l'agent replie sur `webSearch` pour chercher la fiche technique.
 
+#### Vérification de complétude d'un local
+
+L'agent peut vérifier qu'un local contient tous les éléments requis par la réglementation ou les bonnes pratiques, **sans que le local soit explicitement étiqueté dans le modèle**.
+
+Le local est identifié par son contenu (object-first) : une toilette dans un volume = WC, un lit dans un volume = chambre. Une fois le type fonctionnel établi, l'agent consulte le catalogue pour les exigences associées et vérifie leur présence.
+
+```
+Flux : vérification de complétude d'un WC
+
+queryContained(local_bbox)
+→ IfcSanitaryTerminal (toilette) reconnu par l'IA
+→ Type fonctionnel : "WC / cabinet d'aisances"
+    ↓
+searchRules("WC complétude réglementaire")
+→ Règles trouvées : porte requise, lave-mains requis (DTU / CCH)
+    ↓
+queryAdjacent(local_id, { ifcType: "IfcDoor" }) → aucune porte
+queryContained + queryAdjacent pour lave-mains          → aucun
+    ↓
+Flags :
+① Porte manquante — ouverture dans le mur sans IfcDoor associé
+② Lave-mains absent — exigence DTU non satisfaite
+```
+
+#### Vérification d'adjacence sémantique
+
+Au-delà de "X est-il dans Y", l'agent évalue si le **voisinage fonctionnel d'un local est cohérent**. Il identifie le type fonctionnel des locaux adjacents et vérifie leur compatibilité avec les exigences réglementaires ou les règles du catalogue.
+
+```
+Flux : vérification de l'environnement d'un WC
+
+queryAdjacent(wc_id)
+→ local_adjacent : contient chaises, table
+→ Type fonctionnel reconnu : "salle à manger / espace de repas"
+    ↓
+searchRules("WC adjacence espace alimentaire")
+→ Règle trouvée : séparation sanitaire requise,
+  pas de communication directe entre WC et espace de repas
+    ↓
+Vérification : y a-t-il une porte entre les deux locaux ? → non
+Flag : "WC en contact direct avec espace de repas — vérifier cloisonnement"
+```
+
+Ce pattern s'applique à tout cas où la compatibilité fonctionnelle entre locaux voisins est une exigence : chambre non communicante avec cuisine, local technique non adjacent à une salle de réunion, cage d'escalier non ouverte sur un local à risque incendie.
+
 #### Traitement des objets ambigus dans les vérifications
 
 L'agent traite explicitement les cas d'incertitude :
@@ -1258,3 +1304,5 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **searchProductSpec** | Outil MCP qui interroge les bases de données fabricants pour obtenir les spécifications techniques réelles d'un équipement à partir de sa référence (dimensions, poids, contraintes d'installation). |
 | **Vérification dimensionnelle** | Comparaison entre la bbox IFC d'un objet et ses dimensions réelles issues des spécifications fabricant. Détecte les équipements modélisés à la mauvaise échelle, cas fréquent pour les `IfcBuildingElementProxy` sans dimensions exportées. |
 | **Référence fabricant** | Identifiant produit présent dans le nom ou le tag d'un objet IFC (ex : "WOYA060LFCA"), utilisé par l'agent pour interroger les spécifications techniques réelles et détecter les anomalies de modélisation. |
+| **Vérification de complétude** | Contrôle que tous les éléments requis par la réglementation ou les règles du catalogue sont présents dans un local, à partir de son type fonctionnel identifié depuis son contenu (object-first). |
+| **Adjacence sémantique** | Vérification de la compatibilité fonctionnelle entre locaux voisins (ex : WC non contigu à un espace de repas) — va au-delà de la proximité géométrique pour évaluer la cohérence réglementaire du voisinage. |
