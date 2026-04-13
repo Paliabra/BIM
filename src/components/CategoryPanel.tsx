@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { SceneGraph } from '../core/SceneGraph'
 import { IFC_TYPE_LABELS } from '../types/ifc-entities'
+import { useBim } from '../context/BimContext'
 
 interface CategoryPanelProps {
   graph: SceneGraph
@@ -13,6 +14,7 @@ interface CategoryPanelProps {
  * Types are sorted by object count (most frequent first).
  */
 export function CategoryPanel({ graph, version }: CategoryPanelProps) {
+  const { getRenderer } = useBim()
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set())
 
   const types = useMemo(() => {
@@ -50,8 +52,7 @@ export function CategoryPanel({ graph, version }: CategoryPanelProps) {
       next.add(ifcType)
     }
     setHiddenTypes(next)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(window as any).__bim_setTypeVisibility?.(ifcType, becomingVisible)
+    getRenderer()?.setTypeVisibility(ifcType, becomingVisible)
   }
 
   return (

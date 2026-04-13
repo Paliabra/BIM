@@ -142,6 +142,20 @@ export function useSceneSync(
   )
 
   /**
+   * Show/hide a specific set of objects by expressId.
+   * Used by ModelTree storey/space visibility toggles.
+   */
+  const setObjectsVisibility = useCallback(
+    (expressIds: Set<number>, visible: boolean) => {
+      for (const expressId of expressIds) {
+        const meshes = meshMap.current.get(expressId) ?? []
+        for (const m of meshes) m.visible = visible
+      }
+    },
+    [],
+  )
+
+  /**
    * Show/hide all meshes of a given IFC type name.
    */
   const setTypeVisibility = useCallback(
@@ -197,5 +211,5 @@ export function useSceneSync(
     [scene],
   )
 
-  return { handleWorkerMessage, setModelVisibility, setTypeVisibility, updateSectionPlane, removeModel }
+  return { handleWorkerMessage, setModelVisibility, setTypeVisibility, setObjectsVisibility, updateSectionPlane, removeModel }
 }
