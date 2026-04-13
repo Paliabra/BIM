@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.3 — Avril 2026  
+> Version 4.4 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -76,6 +76,7 @@ Les exemples ci-dessous illustrent la logique du moteur. Ils ne définissent pas
 - **Calculer le ratio d'ouverture** d'une pièce en mettant en relation les surfaces de fenêtres et la surface de sol
 - **Déduire la surface nette réelle** d'une pièce en soustrayant les emprises des objets encombrants sélectionnés par l'utilisateur
 - **Vérifier la présence des équipements dans le cellier** en listant tous les objets contenus dans le volume du cellier, sans connaître leur type IFC à l'avance
+- **Détecter les équipements mal dimensionnés** en croisant la référence fabricant dans le nom de l'objet IFC avec les fiches techniques réelles — un `IfcBuildingElementProxy` nommé "WOYA060LFCA" dont la bbox est 9× supérieure aux dimensions Daikin est automatiquement signalé, même sans classification précise
 
 ### Exemple détaillé — Vérification des équipements dans le cellier
 
@@ -805,6 +806,13 @@ resource scenegraph://summary                → statistiques globales du projet
 resource bim-rules://catalogue/{category}   → règles du catalogue par catégorie
 resource bim-rules://rule/{ruleId}          → définition complète d'une règle
 
+// — Données externes (fabricants, normes, web) —
+tool searchProductSpec(
+  reference: string,
+  manufacturer?: string
+): ProductSpec                      // dimensions réelles, poids, contraintes d'installation
+tool webSearch(query: string): SearchResult[]   // recherche documentaire générale
+
 // — Vision (opt-in, nécessite connexion — voir §2) —
 tool renderObjectView(objectId: string, angles: ('front'|'top'|'iso')[]): ImageData[]
 tool renderSpaceView(spaceId: string): ImageData
@@ -1038,11 +1046,12 @@ Pour toute demande soumise, l'agent :
 1. Analyse l'intention réelle derrière la formulation (langage naturel)
 2. **Consulte le catalogue** (`searchRules`) — cherche des règles existantes correspondant à l'intention
 3. Consulte le SceneGraph enrichi (types IFC + reconnaissance visuelle + relations calculées)
-4. **Évalue l'ambiguïté** : l'intention est-elle suffisamment précise pour générer des hypothèses ?
+4. **Interroge les données externes si pertinent** — références fabricants dans les noms d'objets, normes techniques, fiches produits (`searchProductSpec`, `webSearch`)
+5. **Évalue l'ambiguïté** : l'intention est-elle suffisamment précise pour générer des hypothèses ?
    - Si **ambiguïté critique** → pose une question ciblée (une seule) avant de continuer
    - Sinon → génère directement les hypothèses
-5. Présente les hypothèses avec, le cas échéant, les règles du catalogue correspondantes
-6. Sélectionne les primitives spatiales appropriées (§5) et exécute
+6. Présente les hypothèses avec, le cas échéant, les règles du catalogue correspondantes
+7. Sélectionne les primitives spatiales appropriées (§5) et exécute
 
 #### Trois modes d'interaction
 
@@ -1094,6 +1103,36 @@ Demande utilisateur (langage naturel)
   Objets à faible confiance signalés
 ```
 
+#### Vérification dimensionnelle par référence fabricant
+
+Quand le nom ou le tag d'un objet IFC contient une **référence fabricant identifiable**, l'agent peut interroger les spécifications techniques réelles de l'équipement et comparer avec la géométrie modélisée.
+
+**Cas type :** un équipement modélisé en `IfcBuildingElementProxy` sans dimensions exportées (pratique courante pour les équipements MEP) dont la bbox IFC ne correspond pas aux dimensions réelles du produit.
+
+```
+Objet : WOYA060LFCA (IfcBuildingElementProxy)
+    ↓
+searchProductSpec("WOYA060LFCA")
+→ Daikin VRV outdoor 6HP : L 930mm × H 1345mm × P 320mm
+    ↓
+getObjectBBox("WOYA060LFCA")
+→ Bbox IFC : L 3100mm × H 2800mm × P 3100mm
+    ↓
+Écart détecté : facteur ×3 à ×9 selon l'axe
+    ↓
+queryContained(local_bbox, objectId) → false
+→ L'objet déborde du local et intersecte la structure
+
+Résultat :
+① Dimensions non conformes — objet modélisé hors gabarit fabricant (×3 à ×9)
+② Position incorrecte — conséquence probable de l'anomalie ①
+→ Cause probable : objet modélisé sans import des dimensions réelles du fabricant
+```
+
+Cette vérification s'applique à **tout équipement dont la référence est identifiable** — équipements CVC, électriques, sanitaires, équipements de levage, etc. Elle ne nécessite aucune configuration préalable : l'agent reconnaît le pattern de référence fabricant dans le nom de l'objet.
+
+Quand `searchProductSpec` ne retourne pas de résultat structuré, l'agent replie sur `webSearch` pour chercher la fiche technique.
+
 #### Traitement des objets ambigus dans les vérifications
 
 L'agent traite explicitement les cas d'incertitude :
@@ -1105,6 +1144,7 @@ L'agent traite explicitement les cas d'incertitude :
 | Objet reconnu avec confiance < 0.60 | Présenté à l'utilisateur avant l'analyse |
 | Objet sans reconnaissance IA et sans type IFC précis | Signalé "objet non qualifié" — vérification partielle |
 | Objet dont la validation utilisateur contredit l'IA | La correction utilisateur a priorité absolue |
+| Référence fabricant dans le nom → dims IFC incohérentes | Flag "dimensions non conformes" — double vérification position |
 
 ---
 
@@ -1215,3 +1255,6 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **Mode Ask** | Mode d'interaction de l'agent où une ambiguïté critique est détectée — l'agent pose une question ciblée (une seule) avant de générer les hypothèses. Précurseur du mode Propose. |
 | **searchRules** | Outil MCP qui recherche dans le catalogue les règles correspondant sémantiquement à une intention exprimée en langage naturel. |
 | **applyRule** | Outil MCP qui exécute une règle du catalogue sur une zone donnée, avec possibilité de surcharger les paramètres à la volée (overrides). |
+| **searchProductSpec** | Outil MCP qui interroge les bases de données fabricants pour obtenir les spécifications techniques réelles d'un équipement à partir de sa référence (dimensions, poids, contraintes d'installation). |
+| **Vérification dimensionnelle** | Comparaison entre la bbox IFC d'un objet et ses dimensions réelles issues des spécifications fabricant. Détecte les équipements modélisés à la mauvaise échelle, cas fréquent pour les `IfcBuildingElementProxy` sans dimensions exportées. |
+| **Référence fabricant** | Identifiant produit présent dans le nom ou le tag d'un objet IFC (ex : "WOYA060LFCA"), utilisé par l'agent pour interroger les spécifications techniques réelles et détecter les anomalies de modélisation. |
