@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.1 — Avril 2026  
+> Version 4.6 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -76,6 +76,8 @@ Les exemples ci-dessous illustrent la logique du moteur. Ils ne définissent pas
 - **Calculer le ratio d'ouverture** d'une pièce en mettant en relation les surfaces de fenêtres et la surface de sol
 - **Déduire la surface nette réelle** d'une pièce en soustrayant les emprises des objets encombrants sélectionnés par l'utilisateur
 - **Vérifier la présence des équipements dans le cellier** en listant tous les objets contenus dans le volume du cellier, sans connaître leur type IFC à l'avance
+- **Détecter les équipements mal dimensionnés** en croisant la référence fabricant dans le nom de l'objet IFC avec les fiches techniques réelles — un `IfcBuildingElementProxy` nommé "WOYA060LFCA" dont la bbox est 9× supérieure aux dimensions Daikin est automatiquement signalé, même sans classification précise
+- **Vérifier la complétude réglementaire d'un local** en identifiant son type fonctionnel depuis son contenu (une toilette → WC), puis en vérifiant la présence de tous les éléments requis (porte, lave-mains) et la cohérence des locaux adjacents (WC non contigu à un espace de repas)
 
 ### Exemple détaillé — Vérification des équipements dans le cellier
 
@@ -257,11 +259,13 @@ La **reconnaissance visuelle IA** (§17.2) constitue la seule exception au princ
 - **IFC 4.3** — version de référence actuelle buildingSMART
 - La gestion des deux versions est transparente pour l'utilisateur
 
-### Conçu pour le tool use
+### Conçu pour le tool use via MCP
 
-Le moteur géométrique est conçu pour être **interrogeable par un agent IA via des appels d'outils** (function calling / tool use). C'est la même architecture que celle utilisée par les assistants IA modernes pour interagir avec des systèmes externes — Bash, navigateur web, API. Si ces outils sont les primitives spatiales du moteur BIM, un LLM peut réaliser n'importe quelle vérification architecturale ou technique sans nécessiter d'entraînement BIM spécifique.
+Le moteur géométrique expose ses primitives spatiales comme un **serveur MCP (Model Context Protocol)**. MCP est le protocole standard ouvert qui permet à un LLM de découvrir et d'appeler des outils externes de façon structurée — exactement comme Claude utilise `Bash`, `Read` ou `Grep` dans une session de code.
 
-L'interface de tool use est un contrat fonctionnel stable entre le moteur et tout agent IA externe. Elle évolue indépendamment de l'interface utilisateur.
+Tout LLM compatible MCP (Claude, et tout modèle adoptant le protocole) peut se connecter au serveur BIM et exécuter des vérifications complexes sur n'importe quelle maquette, sans entraînement BIM spécifique et sans développement d'intégration personnalisé.
+
+Le serveur MCP est le **point de connexion universel** entre le moteur BIM et tout agent IA externe. Il évolue indépendamment de l'interface utilisateur.
 
 ### Indépendance technologique
 
@@ -463,6 +467,90 @@ Organisées selon 3 axes de catégorisation :
 - Sauvegardées dans le fichier projet et **réutilisables sur d'autres modèles**
 - Partageables entre utilisateurs (export/import)
 - Possibilité de contribution au catalogue commun
+
+### Famille de règles : Connectivité géométrique (GEOMETRIC_CONNECTIVITY)
+
+#### Principe
+
+Les fichiers IFC n'exportent généralement pas les relations de connectivité réseau (`IfcRelConnectsPortToElement`, ports de raccordement). Le moteur ne s'y fie pas. Il vérifie la connectivité **uniquement par la géométrie** : un appareil physiquement raccordé touche ou frôle son réseau. Un écart mesurable révèle un problème de modélisation.
+
+> **Règle fondamentale** : la géométrie est la source de vérité. Les relations IFC sont des annotations optionnelles — leur absence ne bloque pas la vérification.
+
+#### Algorithme
+
+```
+Pour chaque équipement E de type source (ex. IfcSanitaryTerminal) :
+
+  1. Pré-filtre spatial
+     candidats ← spatialIndex.queryRadius(E.bbox.center, rayon_recherche)
+     réseau    ← candidats filtrés par types cibles (ex. IfcPipeSegment)
+
+  2. Test de présence
+     si réseau est vide :
+       → ERREUR : "aucun réseau d'évacuation détecté à proximité"
+
+  3. Distance surface-à-surface
+     distMin ← min( queryMeshDistance(E, r) pour r dans réseau )
+
+  4. Décision
+     si distMin > seuil :
+       → ERREUR : "raccordement non effectif — écart de {distMin} mm (seuil : {seuil} mm)"
+     sinon :
+       → OK
+```
+
+**Pas de point de connexion prédéfini.** La distance minimale entre les deux maillages est calculée directement — elle est nulle ou quasi-nulle quand les éléments sont raccordés, mesurable quand ils ne le sont pas.
+
+#### Illustration — WC non raccordé à l'évacuation
+
+*Le WC est positionné au centre du local. L'évacuation est à plus d'un mètre du bas du maillage sanitaire. Distance surface-à-surface mesurée : ~1 400 mm. Seuil : 150 mm. Résultat : ERREUR.*
+
+Ce type d'erreur est **invisible sur un plan 2D** et passe souvent inaperçu lors des contrôles visuels de la maquette. Le moteur le détecte automatiquement à l'ouverture du fichier.
+
+#### Catalogue — règles de connectivité prédéfinies
+
+| ID | Équipement source | Réseau cible | Seuil | Sévérité |
+|---|---|---|---|---|
+| `SANITARY_DRAIN_CONNECTION` | `IfcSanitaryTerminal` | `IfcPipeSegment`, `IfcPipeFitting` | 150 mm | Erreur |
+| `HVAC_DUCT_CONNECTION` | `IfcAirTerminalBox`, `IfcFan` | `IfcDuctSegment`, `IfcDuctFitting` | 200 mm | Erreur |
+| `HEATING_PIPE_CONNECTION` | `IfcSpaceHeater`, `IfcRadiator` | `IfcPipeSegment` | 100 mm | Erreur |
+| `ELECTRICAL_PANEL_CIRCUIT` | `IfcElectricDistributionBoard` | `IfcCableSegment` | 300 mm | Avertissement |
+| `PUMP_PIPE_CONNECTION` | `IfcPump`, `IfcValve` | `IfcPipeSegment` | 50 mm | Erreur |
+| `LUMINAIRE_CABLE_CONNECTION` | `IfcLightFixture` | `IfcCableSegment` | 300 mm | Avertissement |
+
+#### Implémentation technique
+
+- **Phase 0** : approximation vertex-à-vertex, O(n×m) sur les maillages pré-filtrés par le SpatialIndex — précision suffisante, performance acceptable sur des voisinages réduits
+- **Phase 2** : remplacement par `three-mesh-bvh` derrière `SpatialIndex.queryMeshDistance()` — distance exacte en O(log n), temps réel sur modèles lourds
+- Le SceneGraph conserve les références de maillage en mémoire précisément pour permettre ces calculs
+
+### Structure d'une règle du catalogue
+
+Chaque règle du catalogue possède une structure minimale stable. Cette structure sera enrichie au fil du développement.
+
+```json
+{
+  "id": "nf-habitat-circulation-ratio",
+  "name": "Ratio de circulation — logements",
+  "description": "La surface de circulation ne doit pas dépasser un seuil de la surface habitable totale",
+  "category": { "norme": "NF Habitat", "metier": "Architecture", "usage": "Logement" },
+  "params": {
+    "seuil_ratio_circulation": { "default": 0.18, "unit": "ratio", "label": "Ratio max circulation" }
+  },
+  "source": "NF Habitat — Qualité d'usage",
+  "primitives": ["containment", "mesure"]
+}
+```
+
+Les paramètres (`params`) sont les **seuls éléments modifiables** lors d'un fork. La logique spatiale reste celle de la règle source.
+
+### Fork d'une règle du catalogue
+
+L'utilisateur peut à tout moment forker une règle du catalogue :
+1. Sélectionner une règle
+2. Modifier les paramètres (seuils, tolérances)
+3. Sauvegarder sous un nouveau nom dans ses règles personnelles
+4. La règle forkée reste liée à la règle source (traçabilité des modifications)
 
 ---
 
@@ -678,93 +766,124 @@ La couche IA du moteur n'est pas un assistant conversationnel greffé sur un vie
 
 ---
 
-### 17.0 Le moteur comme environnement d'outils pour l'IA
+### 17.0 Le moteur comme serveur MCP
 
 #### Principe fondamental
 
-Un agent IA moderne (Claude, GPT-4, Gemini…) peut raisonner, planifier et agir en appelant des outils externes. Donner à cet agent `Bash`, `Read`, `Grep` — et il devient capable de faire de l'ingénierie logicielle. Donner à ce même agent les primitives spatiales du moteur BIM — et il devient capable de vérifier n'importe quelle intention architecturale ou technique sur n'importe quelle maquette.
+Un agent IA moderne (Claude, GPT-4, Gemini…) peut raisonner, planifier et agir en appelant des outils externes via le protocole MCP. Donner à cet agent `Bash`, `Read`, `Grep` — et il devient capable de faire de l'ingénierie logicielle. Donner à ce même agent les primitives spatiales du moteur BIM via un serveur MCP — et il devient capable de vérifier n'importe quelle intention architecturale ou technique sur n'importe quelle maquette.
 
 Il n'y a pas de différence de nature. C'est le même paradigme.
 
 ```
-Agent IA reçoit les outils BIM :
-    → queryRadius("chaudière_01", 0.60)
-    → getObjectRelations("chaudière_01")
-    → renderObjectView("chaudière_01", ["front", "top"])
-    → queryContained(zone_chaufferie)
-    → measureClearance("chaudière_01", "devant")
+BIM Viewer (MCP Server local)
+    expose : queryRadius, queryContained, measureClearance, renderObjectView…
+
+Agent IA (MCP Client — Claude ou autre)
+    → appelle queryRadius("chaudière_01", 0.60)     ← MCP tool call
+    → appelle getObjectRelations("chaudière_01")    ← MCP tool call
+    → appelle renderObjectView("chaudière_01", …)   ← MCP tool call
     → raisonne sur les résultats
     → produit : conformité, anomalies, recommandations
 ```
 
-Aucun entraînement BIM spécifique n'est requis pour l'agent. Les outils fournissent le contexte spatial précis ; l'agent apporte le raisonnement. C'est exactement la séparation que ce moteur est conçu à garantir.
+Aucun entraînement BIM spécifique n'est requis pour l'agent. Le serveur MCP fournit le contexte spatial précis ; l'agent apporte le raisonnement.
 
-#### Interface de tool use — Contrat stable
+#### Architecture MCP
 
-L'ensemble des outils exposés à un agent IA forme un **contrat fonctionnel stable**. Toute implémentation conforme à cette interface est substituable — que l'agent soit Claude, un autre LLM, ou un agent spécialisé.
+Le moteur expose **un serveur MCP local** (démarré avec le viewer, accessible via transport stdio ou HTTP+SSE selon le mode de déploiement). Tout client MCP peut s'y connecter et découvrir les outils disponibles via le mécanisme de découverte standard du protocole.
 
-```typescript
-interface BIMAgentTools {
-
-  // — Requêtes spatiales —
-  queryRadius(
-    objectId: string,
-    radiusMeters: number
-  ): IFCObject[]
-
-  queryContained(
-    zone: ZoneId | BoundingBox
-  ): IFCObject[]
-
-  queryIntersecting(
-    objectId: string
-  ): IFCObject[]
-
-  queryAdjacent(
-    objectId: string,
-    toleranceMeters?: number
-  ): IFCObject[]
-
-  // — Mesures —
-  measureDistance(
-    objectId1: string,
-    objectId2: string
-  ): number                         // mètres
-
-  measureClearance(
-    objectId: string,
-    direction?: 'devant' | 'derrière' | 'gauche' | 'droite' | 'haut' | 'bas'
-  ): number                         // mètres
-
-  measureVolume(objectId: string): number    // m³
-  measureSurface(objectId: string): number   // m²
-
-  // — Informations —
-  getObjectProperties(objectId: string): Properties
-  getObjectRelations(objectId: string): Relations
-  getObjectBBox(objectId: string): BoundingBox
-  getObjectAIRecognition(objectId: string): AIRecognitionResult
-
-  // — Recherche —
-  findByIFCType(ifcType: string): IFCObject[]
-  findByFunctionalType(functionalType: string): IFCObject[]
-  querySceneGraph(filter: ObjectFilter): IFCObject[]
-
-  // — Vision (opt-in, nécessite connexion) —
-  renderObjectView(
-    objectId: string,
-    angles: ('front' | 'top' | 'iso')[]
-  ): ImageData[]
-
-  renderSpaceView(spaceId: string): ImageData
-}
+```
+┌─────────────────────────────────────┐
+│           BIM Viewer                │
+│                                     │
+│  ┌──────────────┐  ┌─────────────┐  │
+│  │  SceneGraph  │  │  Renderer   │  │
+│  │  SpatialIdx  │  │  (Three.js) │  │
+│  └──────┬───────┘  └─────────────┘  │
+│         │                           │
+│  ┌──────▼──────────────────────┐    │
+│  │       MCP Server            │    │
+│  │  (primitives spatiales      │    │
+│  │   exposées comme MCP tools) │    │
+│  └──────────────┬──────────────┘    │
+└─────────────────┼───────────────────┘
+                  │ stdio / HTTP+SSE
+          ┌───────▼────────┐
+          │   MCP Client   │
+          │ (Claude, autre │
+          │  LLM MCP-compat│
+          └────────────────┘
 ```
 
-**Tout ce qui est vérifiable dans une maquette IFC est exprimable via cette interface.** Les primitives spatiales (§5) sont l'implémentation de ce contrat.
+#### Outils MCP exposés — Contrat stable
+
+L'ensemble des outils MCP exposés forme un **contrat fonctionnel stable**. Toute implémentation conforme est substituable — que le client soit Claude, un autre LLM MCP-compatible, ou un agent spécialisé. Le contrat est versionné indépendamment du viewer.
+
+```typescript
+// MCP Tool definitions (schéma JSON Schema sous le capot)
+
+// — Requêtes spatiales —
+tool queryRadius(objectId: string, radiusMeters: number): IFCObject[]
+tool queryContained(zone: ZoneId | BoundingBox): IFCObject[]
+tool queryIntersecting(objectId: string): IFCObject[]
+tool queryAdjacent(objectId: string, toleranceMeters?: number): IFCObject[]
+
+// — Mesures —
+tool measureDistance(objectId1: string, objectId2: string): number   // mètres
+tool measureClearance(
+  objectId: string,
+  direction?: 'devant' | 'derrière' | 'gauche' | 'droite' | 'haut' | 'bas'
+): number                                                             // mètres
+tool measureVolume(objectId: string): number                          // m³
+tool measureSurface(objectId: string): number                         // m²
+tool queryMeshDistance(
+  objectId1: string,
+  objectId2: string
+): number                                                             // mm — distance surface-à-surface exacte entre maillages
+
+// — Informations —
+tool getObjectProperties(objectId: string): Properties
+tool getObjectRelations(objectId: string): Relations
+tool getObjectBBox(objectId: string): BoundingBox
+tool getObjectAIRecognition(objectId: string): AIRecognitionResult
+
+// — Recherche —
+tool findByIFCType(ifcType: string): IFCObject[]
+tool findByFunctionalType(functionalType: string): IFCObject[]
+tool querySceneGraph(filter: ObjectFilter): IFCObject[]
+
+// — Catalogue de règles métiers —
+tool searchRules(intent: string): Rule[]                // recherche sémantique dans le catalogue
+tool applyRule(
+  ruleId: string,
+  zone: ZoneId | BoundingBox,
+  overrides?: Partial<RuleParams>                       // modification des seuils à la volée
+): VerificationResult
+
+// — Ressources MCP (lecture directe, sans appel de fonction) —
+resource scenegraph://model/{modelId}        → état complet d'un modèle
+resource scenegraph://object/{objectId}      → données complètes d'un objet
+resource scenegraph://summary                → statistiques globales du projet
+resource bim-rules://catalogue/{category}   → règles du catalogue par catégorie
+resource bim-rules://rule/{ruleId}          → définition complète d'une règle
+
+// — Données externes (fabricants, normes, web) —
+tool searchProductSpec(
+  reference: string,
+  manufacturer?: string
+): ProductSpec                      // dimensions réelles, poids, contraintes d'installation
+tool webSearch(query: string): SearchResult[]   // recherche documentaire générale
+
+// — Vision (opt-in, nécessite connexion — voir §2) —
+tool renderObjectView(objectId: string, angles: ('front'|'top'|'iso')[]): ImageData[]
+tool renderSpaceView(spaceId: string): ImageData
+```
+
+**Tout ce qui est vérifiable dans une maquette IFC est exprimable via ce contrat MCP.** Les primitives spatiales (§5) sont l'implémentation des outils. Les ressources MCP donnent accès en lecture directe au SceneGraph enrichi.
 
 #### Composabilité
 
-L'agent IA et le moteur sont indépendants. N'importe quel LLM compatible function calling peut être branché sur cette interface sans modifier le moteur. La version de l'agent évolue séparément de la version du moteur.
+Le viewer et l'agent IA sont découplés par le protocole MCP. Aucune modification du viewer n'est nécessaire pour changer d'agent. Aucune modification de l'agent n'est nécessaire pour une nouvelle version du viewer, tant que le contrat MCP est respecté.
 
 ---
 
@@ -981,22 +1100,40 @@ Après analyse géométrique et reconnaissance visuelle, chaque objet IFC est re
 
 #### Fonctionnement de l'agent
 
-L'agent ne traduit pas une règle littéralement. Il **interprète l'intention réelle** de l'utilisateur, génère toutes les hypothèses plausibles et les traite simultanément — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité.
+L'agent ne traduit pas une règle littéralement. Il **interprète l'intention réelle** de l'utilisateur, consulte le catalogue de règles métiers, génère des hypothèses et les traite — pour **tout type de vérification**, quel que soit l'objet, le domaine ou la complexité.
 
 Pour toute demande soumise, l'agent :
 
 1. Analyse l'intention réelle derrière la formulation (langage naturel)
-2. Consulte le SceneGraph enrichi (types IFC + reconnaissance visuelle + relations calculées)
-3. Identifie tous les cas plausibles, y compris les objets identifiés par reconnaissance IA
-4. Sélectionne la ou les primitives spatiales appropriées (§5)
-5. Exécute les analyses et présente un résultat complet
+2. **Consulte le catalogue** (`searchRules`) — cherche des règles existantes correspondant à l'intention
+3. Consulte le SceneGraph enrichi (types IFC + reconnaissance visuelle + relations calculées)
+4. **Interroge les données externes si pertinent** — références fabricants dans les noms d'objets, normes techniques, fiches produits (`searchProductSpec`, `webSearch`)
+5. **Évalue l'ambiguïté** : l'intention est-elle suffisamment précise pour générer des hypothèses ?
+   - Si **ambiguïté critique** → pose une question ciblée (une seule) avant de continuer
+   - Sinon → génère directement les hypothèses
+6. Présente les hypothèses avec, le cas échéant, les règles du catalogue correspondantes
+7. Sélectionne les primitives spatiales appropriées (§5) et exécute
 
-#### Deux modes d'exécution
+#### Trois modes d'interaction
 
-| Mode | Comportement |
-|---|---|
-| **Propose** | L'agent présente toutes les hypothèses identifiées et attend validation avant d'exécuter — l'utilisateur contrôle chaque décision |
-| **Execute** | L'agent exécute directement et présente les résultats avec les hypothèses traitées — comme un agent d'exécution de code |
+| Mode | Déclenchement | Comportement |
+|---|---|---|
+| **Ask** | Ambiguïté critique — deux interprétations radicalement différentes possibles | L'agent pose une question ciblée (une seule) pour lever l'ambiguïté avant de proposer |
+| **Propose** | Intention interprétable | L'agent présente les hypothèses identifiées et les règles du catalogue associées — attend validation avant d'exécuter |
+| **Execute** | Mode choisi par l'utilisateur ou intention non ambiguë | L'agent exécute directement et présente les résultats avec les hypothèses traitées |
+
+#### Interaction avec le catalogue de règles
+
+Quand `searchRules` retourne des résultats, l'agent les présente comme point de départ :
+
+```
+Agent : "J'ai trouvé 2 règles correspondantes dans le catalogue :
+  → [NF Habitat] Ratio de circulation ≤ 18% (logements)
+  → [Interne] Espaces résiduels < 3 m²
+  Appliquer l'une, les deux, adapter les seuils, ou travailler autrement ?"
+```
+
+L'utilisateur peut **sélectionner** une règle telle quelle, **modifier les paramètres** à la volée (les `overrides` sont passés à `applyRule`), ou ignorer le catalogue et laisser l'agent générer ses propres hypothèses.
 
 #### Flux complet
 
@@ -1005,20 +1142,102 @@ Demande utilisateur (langage naturel)
          ↓
    Interprétation de l'intention
          ↓
-   Consultation SceneGraph enrichi
-   (IFC + reconnaissance IA + relations calculées)
+   searchRules(intention) ──────────────────────────────────┐
+         ↓                                                   │
+   Règles trouvées ?                               Règles du catalogue
+   ├── Oui → les présenter comme hypothèses ←─────────────┘
+   └── Non → générer les hypothèses depuis le SceneGraph
          ↓
-   Génération des hypothèses
+   Ambiguïté critique ?
+   ├── Oui → [Mode Ask] : 1 question ciblée → réponse → retour étape précédente
+   └── Non ↓
          ↓
-     Mode Propose              Mode Execute
-  Validation user →                ↓
-         ↓               Exécution directe
-     Exécution
+     Mode Propose                    Mode Execute
+  Présente hypothèses                     ↓
+  + règles catalogue associées    Exécution directe
+  Validation user →
+         ↓
+     Exécution (applyRule ou primitives directes)
          ↓
   Résultats + hypothèses traitées + alertes
   Objets mis en exergue dans la vue 3D
   Objets à faible confiance signalés
 ```
+
+#### Vérification dimensionnelle par référence fabricant
+
+Quand le nom ou le tag d'un objet IFC contient une **référence fabricant identifiable**, l'agent peut interroger les spécifications techniques réelles de l'équipement et comparer avec la géométrie modélisée.
+
+**Cas type :** un équipement modélisé en `IfcBuildingElementProxy` sans dimensions exportées (pratique courante pour les équipements MEP) dont la bbox IFC ne correspond pas aux dimensions réelles du produit.
+
+```
+Objet : WOYA060LFCA (IfcBuildingElementProxy)
+    ↓
+searchProductSpec("WOYA060LFCA")
+→ Daikin VRV outdoor 6HP : L 930mm × H 1345mm × P 320mm
+    ↓
+getObjectBBox("WOYA060LFCA")
+→ Bbox IFC : L 3100mm × H 2800mm × P 3100mm
+    ↓
+Écart détecté : facteur ×3 à ×9 selon l'axe
+    ↓
+queryContained(local_bbox, objectId) → false
+→ L'objet déborde du local et intersecte la structure
+
+Résultat :
+① Dimensions non conformes — objet modélisé hors gabarit fabricant (×3 à ×9)
+② Position incorrecte — conséquence probable de l'anomalie ①
+→ Cause probable : objet modélisé sans import des dimensions réelles du fabricant
+```
+
+Cette vérification s'applique à **tout équipement dont la référence est identifiable** — équipements CVC, électriques, sanitaires, équipements de levage, etc. Elle ne nécessite aucune configuration préalable : l'agent reconnaît le pattern de référence fabricant dans le nom de l'objet.
+
+Quand `searchProductSpec` ne retourne pas de résultat structuré, l'agent replie sur `webSearch` pour chercher la fiche technique.
+
+#### Vérification de complétude d'un local
+
+L'agent peut vérifier qu'un local contient tous les éléments requis par la réglementation ou les bonnes pratiques, **sans que le local soit explicitement étiqueté dans le modèle**.
+
+Le local est identifié par son contenu (object-first) : une toilette dans un volume = WC, un lit dans un volume = chambre. Une fois le type fonctionnel établi, l'agent consulte le catalogue pour les exigences associées et vérifie leur présence.
+
+```
+Flux : vérification de complétude d'un WC
+
+queryContained(local_bbox)
+→ IfcSanitaryTerminal (toilette) reconnu par l'IA
+→ Type fonctionnel : "WC / cabinet d'aisances"
+    ↓
+searchRules("WC complétude réglementaire")
+→ Règles trouvées : porte requise, lave-mains requis (DTU / CCH)
+    ↓
+queryAdjacent(local_id, { ifcType: "IfcDoor" }) → aucune porte
+queryContained + queryAdjacent pour lave-mains          → aucun
+    ↓
+Flags :
+① Porte manquante — ouverture dans le mur sans IfcDoor associé
+② Lave-mains absent — exigence DTU non satisfaite
+```
+
+#### Vérification d'adjacence sémantique
+
+Au-delà de "X est-il dans Y", l'agent évalue si le **voisinage fonctionnel d'un local est cohérent**. Il identifie le type fonctionnel des locaux adjacents et vérifie leur compatibilité avec les exigences réglementaires ou les règles du catalogue.
+
+```
+Flux : vérification de l'environnement d'un WC
+
+queryAdjacent(wc_id)
+→ local_adjacent : contient chaises, table
+→ Type fonctionnel reconnu : "salle à manger / espace de repas"
+    ↓
+searchRules("WC adjacence espace alimentaire")
+→ Règle trouvée : séparation sanitaire requise,
+  pas de communication directe entre WC et espace de repas
+    ↓
+Vérification : y a-t-il une porte entre les deux locaux ? → non
+Flag : "WC en contact direct avec espace de repas — vérifier cloisonnement"
+```
+
+Ce pattern s'applique à tout cas où la compatibilité fonctionnelle entre locaux voisins est une exigence : chambre non communicante avec cuisine, local technique non adjacent à une salle de réunion, cage d'escalier non ouverte sur un local à risque incendie.
 
 #### Traitement des objets ambigus dans les vérifications
 
@@ -1031,18 +1250,20 @@ L'agent traite explicitement les cas d'incertitude :
 | Objet reconnu avec confiance < 0.60 | Présenté à l'utilisateur avant l'analyse |
 | Objet sans reconnaissance IA et sans type IFC précis | Signalé "objet non qualifié" — vérification partielle |
 | Objet dont la validation utilisateur contredit l'IA | La correction utilisateur a priorité absolue |
+| Référence fabricant dans le nom → dims IFC incohérentes | Flag "dimensions non conformes" — double vérification position |
 
 ---
 
 ### 17.4 Interface IA
 
 - L'utilisateur pose des questions en **langage naturel**
-- L'IA dispose du SceneGraph enrichi (géométrie + reconnaissance visuelle + relations calculées) pour raisonner
-- Quatre usages :
+- L'IA dispose du SceneGraph enrichi (géométrie + reconnaissance visuelle + relations calculées) et du catalogue de règles métiers pour raisonner
+- Cinq usages :
   1. **Création de règles** (section 8 — Mode IA)
   2. **Interrogation directe** : *"Le garde-corps de la chambre 201 respecte-t-il la norme PMR ?"*
-  3. **Vérification intelligente** : interprétation, hypothèses, exécution sur le SceneGraph enrichi
+  3. **Vérification intelligente** : interprétation, consultation catalogue, hypothèses, exécution
   4. **Validation de la reconnaissance** : consulter, confirmer ou corriger les identifications visuelles
+  5. **Navigation dans le catalogue** : parcourir, sélectionner, forker et appliquer des règles existantes
 
 **Panneau de reconnaissance**
 
@@ -1129,7 +1350,22 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **Object-first** | Paradigme d'analyse qui part des objets physiques (géométrie, reconnaissance) plutôt que des contenants hiérarchiques (IfcSpace, niveaux) |
 | **Validation utilisateur** | Action de l'utilisateur qui confirme, corrige ou ignore une proposition de l'IA pour un objet sous le seuil de confiance automatique |
 | **SceneGraph enrichi** | SceneGraph contenant, en plus des données géométriques et IFC, les résultats de reconnaissance visuelle et les relations calculées par les primitives spatiales |
-| **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes (fonctions) pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. Le moteur BIM expose ses primitives dans ce format. |
-| **Interface de tool use** | Contrat stable définissant l'ensemble des outils appelables par un agent IA sur le moteur BIM. Indépendant du LLM utilisé et de l'interface utilisateur. |
-| **Function calling** | Mécanisme standardisé par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Équivalent technique de "tool use". |
-| **Composabilité** | Propriété du moteur qui lui permet d'être branché à n'importe quel LLM compatible function calling sans modification — l'agent et le moteur évoluent indépendamment. |
+| **MCP** | Model Context Protocol — protocole standard ouvert (Anthropic) permettant à un LLM de découvrir et d'appeler des outils externes de façon structurée. Le moteur BIM expose ses primitives via un serveur MCP. |
+| **Serveur MCP** | Composant du moteur BIM qui expose les primitives spatiales comme outils MCP appelables par tout LLM compatible. Tourne localement avec le viewer (transport stdio ou HTTP+SSE). |
+| **Ressource MCP** | Données lisibles directement par l'agent via le protocole MCP sans appel de fonction — état du SceneGraph, données d'un objet, statistiques du projet. |
+| **Tool use** | Paradigme d'interaction où un LLM appelle des outils externes pour obtenir des données ou déclencher des actions, et raisonne sur les résultats. MCP est le protocole qui standardise ce mécanisme. |
+| **Function calling** | Mécanisme par lequel un LLM déclare vouloir appeler une fonction, reçoit le résultat, et continue son raisonnement. Implémentation sous-jacente de MCP tool calls. |
+| **Composabilité** | Propriété du moteur garantie par le protocole MCP : tout LLM compatible peut être branché sans modifier le viewer, et toute mise à jour du viewer est transparente pour l'agent tant que le contrat MCP est respecté. |
+| **Catalogue de règles** | Base de règles métiers fournies et maintenues par l'équipe, organisées par norme / métier / usage. Chaque règle est sélectionnable, forkable et modifiable par l'utilisateur. Interrogeable par l'agent via `searchRules`. |
+| **Fork de règle** | Copie d'une règle du catalogue dans les règles personnelles de l'utilisateur, avec modification des paramètres. La règle forkée reste traçable vers sa règle source. |
+| **Mode Ask** | Mode d'interaction de l'agent où une ambiguïté critique est détectée — l'agent pose une question ciblée (une seule) avant de générer les hypothèses. Précurseur du mode Propose. |
+| **searchRules** | Outil MCP qui recherche dans le catalogue les règles correspondant sémantiquement à une intention exprimée en langage naturel. |
+| **applyRule** | Outil MCP qui exécute une règle du catalogue sur une zone donnée, avec possibilité de surcharger les paramètres à la volée (overrides). |
+| **searchProductSpec** | Outil MCP qui interroge les bases de données fabricants pour obtenir les spécifications techniques réelles d'un équipement à partir de sa référence (dimensions, poids, contraintes d'installation). |
+| **Vérification dimensionnelle** | Comparaison entre la bbox IFC d'un objet et ses dimensions réelles issues des spécifications fabricant. Détecte les équipements modélisés à la mauvaise échelle, cas fréquent pour les `IfcBuildingElementProxy` sans dimensions exportées. |
+| **Référence fabricant** | Identifiant produit présent dans le nom ou le tag d'un objet IFC (ex : "WOYA060LFCA"), utilisé par l'agent pour interroger les spécifications techniques réelles et détecter les anomalies de modélisation. |
+| **Vérification de complétude** | Contrôle que tous les éléments requis par la réglementation ou les règles du catalogue sont présents dans un local, à partir de son type fonctionnel identifié depuis son contenu (object-first). |
+| **Adjacence sémantique** | Vérification de la compatibilité fonctionnelle entre locaux voisins (ex : WC non contigu à un espace de repas) — va au-delà de la proximité géométrique pour évaluer la cohérence réglementaire du voisinage. |
+| **GEOMETRIC_CONNECTIVITY** | Famille de règles vérifiant la connectivité des équipements à leurs réseaux (plomberie, CVC, électrique) par distance surface-à-surface entre maillages — sans dépendre des relations IFC déclarées. |
+| **queryMeshDistance** | Outil MCP calculant la distance minimale surface-à-surface entre les maillages géométriques de deux objets (en mm). Fondement de la vérification GEOMETRIC_CONNECTIVITY. Phase 0 : approximation vertex, Phase 2 : BVH exact. |
+| **Distance surface-à-surface** | Distance minimale entre les surfaces géométriques réelles de deux objets, distincte de la distance entre leurs centres ou leurs bbox. Nulle quand deux éléments se touchent, mesurable quand ils sont déconnectés. |
