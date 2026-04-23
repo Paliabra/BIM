@@ -876,7 +876,14 @@ tool webSearch(query: string): SearchResult[]   // recherche documentaire géné
 
 // — Vision (opt-in, nécessite connexion — voir §2) —
 tool renderSpaceWalkthrough(spaceId: string): WalkthroughSequence   // parcours d'inspection simulé (§17.2)
-tool renderObjectView(objectId: string): InspectionSequence         // approche + inspection rapprochée de l'objet
+tool renderObjectView(
+  objectId: string,
+  options?: {
+    distance?: 'close' | 'medium' | 'far' | number  // mètres depuis la surface — défaut 'medium'
+    angle?:    'front' | 'side' | 'top' | '3/4'     // direction du regard — défaut '3/4'
+    context?:  number                                // rayon des voisins visibles en mètres — défaut 3m
+  }
+): InspectionSequence   // l'agent dirige la caméra comme un opérateur humain
 ```
 
 **Tout ce qui est vérifiable dans une maquette IFC est exprimable via ce contrat MCP.** Les primitives spatiales (§5) sont l'implémentation des outils. Les ressources MCP donnent accès en lecture directe au SceneGraph enrichi.
@@ -997,6 +1004,40 @@ Frame {
 ```
 
 Cette séquence est envoyée en un seul appel à l'IA. Elle reçoit le récit visuel complet de l'espace — exactement comme un inspecteur humain le parcourrait.
+
+#### Caméra dirigée par l'agent
+
+Le parcours standard est un point de départ. Si l'agent a besoin de plus d'information sur un objet — parce que l'identification est ambiguë, parce qu'un détail est inaccessible depuis le chemin standard — il peut **diriger la caméra** via `renderObjectView`.
+
+```
+Parcours standard (Passe 2)
+        ↓
+Agent : identification incertaine sur l'objet X
+        ↓
+renderObjectView("X", { distance: 'close', angle: 'front' })
+→ nouvelle frame : vue rapprochée de face
+        ↓
+Agent : toujours ambigu — veut voir le dessus
+        ↓
+renderObjectView("X", { distance: 'close', angle: 'top', context: 1 })
+→ nouvelle frame : vue de dessus avec 1m de voisinage
+        ↓
+Identification résolue
+```
+
+L'agent dispose de la même liberté qu'un expert humain qui s'approche, recule, tourne autour d'un objet pour l'identifier. La caméra est son instrument de regard.
+
+| Paramètre | Valeur | Effet |
+|---|---|---|
+| `distance: 'close'` | ~0.5m surface | Détails fins, matière, inscriptions |
+| `distance: 'medium'` | ~1.5m surface | Vue d'ensemble de l'objet |
+| `distance: 'far'` | ~3–5m surface | Objet dans son contexte spatial |
+| `distance: number` | X mètres exact | Contrôle précis |
+| `angle: 'front'` | Face principale | Vue de travail standard |
+| `angle: 'side'` | Profil | Profondeur, raccordements latéraux |
+| `angle: 'top'` | Dessus | Emprise au sol, connexions en tête |
+| `angle: '3/4'` | Vue naturelle | Compréhension volumique générale |
+| `context: N` | N mètres | Objets voisins visibles dans le rayon N |
 
 #### Données transmises au modèle de vision
 
