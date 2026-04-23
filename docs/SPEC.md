@@ -926,7 +926,50 @@ La reconnaissance visuelle résout ce problème : l'IA reconnaît chaque objet p
 
 #### Déclenchement
 
-La reconnaissance visuelle est lancée **dès le chargement complet d'un modèle**, en tâche de fond, sans bloquer l'interface. Elle ne nécessite aucune interaction de l'utilisateur pour démarrer. Les résultats se matérialisent progressivement dans l'interface au fur et à mesure de l'analyse.
+La reconnaissance visuelle est lancée **dès le chargement complet d'un modèle**, en tâche de fond, sans bloquer l'interface. Elle ne nécessite aucune interaction de l'utilisateur pour démarrer. Les résultats se matérialisent progressivement dans le SceneGraph au fil de l'analyse.
+
+#### WalkthroughEngine — architecture parallèle
+
+Le moteur de parcours est le cœur de la reconnaissance visuelle. Sa performance conditionne directement la qualité et la rapidité de l'identification. Il opère en trois étapes dont deux sont parallélisées :
+
+```
+Chargement du modèle
+        ↓
+┌─────────────────────────────────────────┐
+│  PathPlanner — tous les espaces         │
+│  en parallèle (Web Workers)             │
+│  ├── Space_001 → chemin calculé         │
+│  ├── Space_002 → chemin calculé         │
+│  └── Space_N   → chemin calculé         │
+└──────────────┬──────────────────────────┘
+               ↓  tous les chemins prêts avant le premier rendu
+┌──────────────────────────────────────────┐
+│  FrameCapture — file de rendu            │
+│  (WebGL : un contexte, file optimisée)   │
+│  Priorité :                              │
+│  1. Espaces avec objets non classifiés   │
+│  2. Espaces techniques                   │
+│  3. Reste du bâtiment                    │
+└──────────────┬───────────────────────────┘
+               ↓  séquences envoyées à mesure
+┌──────────────────────────────────────────┐
+│  File IA — traitement parallèle          │
+│  ├── Space_001 → IA (batch 1)            │
+│  ├── Space_003 → IA (batch 1)            │
+│  └── Space_002 → IA (batch 2)            │
+│  → résultats → SceneGraph (continu)      │
+└──────────────────────────────────────────┘
+```
+
+| Étape | Parallélisation | Mécanisme |
+|---|---|---|
+| PathPlanner | ✅ Complète | Web Workers — calcul pur, sans rendu |
+| FrameCapture | ⚠️ File optimisée | Un contexte WebGL — file par priorité |
+| Traitement IA | ✅ Complète | Indépendant du rendu, par batch |
+
+**Règle fondamentale :** tous les chemins sont calculés avant que le premier frame soit rendu. Le rendu alimente la file IA en continu. L'IA ne attend jamais le PathPlanner — le moteur ne crée jamais de goulot d'étranglement amont.
+
+**Ce que ça produit :** une connaissance accumulée, pas de l'omniscience. L'IA a parcouru chaque espace séquentiellement — comme un inspecteur après une tournée complète. Les angles morts (objets partiellement cachés) sont traités par la caméra dirigée (`renderObjectView`).
 
 #### Architecture — 3 passes de reconnaissance
 
