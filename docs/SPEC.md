@@ -1004,7 +1004,8 @@ Frame {
   position: [x, y, z]      // position caméra dans l'espace
   direction: [x, y, z]     // direction du regard
   visibleObjectIds: string[] // tous les expressIds visibles dans ce frame (frustum)
-  focusObjectId?: string    // objet ciblé si frame d'inspection
+  focusObjectId?: string       // expressId de l'objet ciblé
+  focusObjectPosition?: [x, y, z]  // centroïde de l'objet — renfort spatial si l'ID est instable
 }
 ```
 
