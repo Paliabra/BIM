@@ -875,8 +875,8 @@ tool searchProductSpec(
 tool webSearch(query: string): SearchResult[]   // recherche documentaire générale
 
 // — Vision (opt-in, nécessite connexion — voir §2) —
-tool renderObjectView(objectId: string, angles: ('front'|'top'|'iso')[]): ImageData[]
-tool renderSpaceView(spaceId: string): ImageData
+tool renderSpaceWalkthrough(spaceId: string): WalkthroughSequence   // parcours d'inspection simulé (§17.2)
+tool renderObjectView(objectId: string): InspectionSequence         // approche + inspection rapprochée de l'objet
 ```
 
 **Tout ce qui est vérifiable dans une maquette IFC est exprimable via ce contrat MCP.** Les primitives spatiales (§5) sont l'implémentation des outils. Les ressources MCP donnent accès en lecture directe au SceneGraph enrichi.
@@ -931,30 +931,80 @@ Passe 1 — Vue d'ensemble du modèle
   Contexte global : discipline principale, typologies dominantes,
   zones techniques probables, organisation volumique
         ↓
-Passe 2 — Par espace / zone
+Passe 2 — Par espace / zone : parcours d'inspection simulé
         ↓
   Pour chaque espace IFC ou cluster spatial :
-  rendu de l'espace avec ses objets contenus
-  → identification des objets par type fonctionnel dans leur contexte
+  simulation du cheminement d'un inspecteur humain à travers l'espace
+  → l'IA reçoit une séquence ordonnée de frames, pas des vues isolées
+  → identification des objets par type fonctionnel dans leur contexte spatial
         ↓
 Passe 3 — Par objet (ciblée, priorités)
         ↓
   Objets non classifiés, scores faibles en passe 2,
   objets demandés explicitement par l'utilisateur
-  → rendu focalisé sur l'objet + voisins immédiats
+  → approche simulée depuis le couloir + inspection rapprochée de l'objet
   → identification précise avec estimation de paramètres
 ```
 
 **Pourquoi 3 passes ?**
 
-Passer 200 000 objets en appels API individuels n'est ni économique ni pertinent. La passe 1 donne le contexte global (une chaufferie identifiée en passe 1 donne un prior fort aux objets contenus en passe 2). Les passes 2 et 3 sont ciblées et parallelisables.
+Passer 200 000 objets en appels API individuels n'est ni économique ni pertinent. La passe 1 donne le contexte global (une chaufferie identifiée en passe 1 donne un prior fort aux objets contenus en passe 2). Les passes 2 et 3 sont ciblées et parallélisables.
+
+#### Parcours d'inspection simulé
+
+L'agent ne reçoit pas un ensemble de vues déconnectées — il reçoit une **séquence de frames ordonnées** qui simule le cheminement d'un inspecteur humain à travers l'espace. La cohérence spatiale de la séquence est ce qui permet à l'IA de comprendre le projet.
+
+**Calcul du chemin d'inspection**
+
+Le chemin est calculé automatiquement depuis la topologie de l'espace :
+
+```
+1. Point d'entrée     ← porte(s) de l'espace (IfcDoor adjacent)
+2. Scan depuis le seuil ← vue depuis l'entrée, orientée vers l'intérieur
+3. Déplacement au centre ← centroïde de l'espace à 1.70m
+4. Points d'intérêt   ← objets contenus, triés par score d'intérêt
+                          (non classifiés en priorité, puis par type)
+5. Approche de chaque objet ← caméra qui s'avance vers l'objet
+6. Inspection rapprochée ← cadrage serré, objet + voisins immédiats
+7. Sortie             ← retour vers la porte de sortie
+```
+
+**Qualité du rendu**
+
+- **Couleurs IFC préservées** — les styles de surface (`IfcStyledItem`, `IfcColourRgb`) sont rendus tels quels. Les couleurs sont de la donnée visuelle à part entière.
+- **Ambient Occlusion** — donne la profondeur spatiale en complément des couleurs
+- **Ombres douces** — permettent de distinguer les volumes entre eux
+- **Caméra orientée dans la direction du déplacement** — chaque frame est cohérente avec la précédente
+
+**Ce que l'IA reçoit**
+
+```
+WalkthroughSequence {
+  frames: Frame[]           // séquence ordonnée
+  metadata: {
+    spaceId: string
+    path: PathPoint[]       // positions caméra dans l'espace
+    objectsEncountered: string[]  // objets dans l'ordre du parcours
+  }
+}
+
+Frame {
+  image: ImageData          // rendu couleur IFC + AO + ombres
+  position: [x, y, z]      // position caméra dans l'espace
+  direction: [x, y, z]     // direction du regard
+  focusObjectId?: string    // objet ciblé si frame d'inspection
+}
+```
+
+Cette séquence est envoyée en un seul appel à l'IA. Elle reçoit le récit visuel complet de l'espace — exactement comme un inspecteur humain le parcourrait.
 
 #### Données transmises au modèle de vision
 
 Pour chaque appel, l'agent transmet :
 
 ```
-Rendu PNG de l'objet dans son contexte (voisins visibles, éclairage 3D standard)
+Séquence de frames du parcours d'inspection (images PNG rendues localement)
+  — couleurs IFC réelles, AO, ombres, caméra cohérente entre frames
   +
 Contexte textuel structuré :
   - Passe précédente : discipline identifiée, type de zone
@@ -962,9 +1012,10 @@ Contexte textuel structuré :
   - Dimensions AABB : L × l × H en mètres
   - Relations topologiques : "adjacent à [mur porteur], [réseau eau chaude]"
   - Position dans le bâtiment : étage, position relative
+  - Index du parcours : objets rencontrés dans l'ordre
 ```
 
-Le fichier IFC source n'est **jamais transmis** — seulement des captures 3D rendues localement et des métadonnées géométriques agrégées.
+Le fichier IFC source n'est **jamais transmis** — seulement des frames rendues localement depuis le moteur Three.js et des métadonnées géométriques agrégées.
 
 #### Fournisseur IA — abstraction et évolution
 
