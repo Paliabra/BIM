@@ -3,7 +3,7 @@
 > Un moteur d'analyse spatiale pour maquettes numériques IFC.
 > La géométrie comme source de vérité. L'IA comme œil d'expert.
 
-**Manifeste :** [`docs/article-paradigme.md`](docs/article-paradigme.md) — *Du trait à la maquette comprise*
+**Manifeste :** [`docs/article-paradigme.md`](docs/article-paradigme.md) — *Du trait à la maquette comprise* · [English](docs/article-paradigm.md)
 **Spécification :** [`docs/SPEC.md`](docs/SPEC.md) — **Feuille de route :** [`ROADMAP.md`](ROADMAP.md)
 
 ---
