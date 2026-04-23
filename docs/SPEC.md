@@ -987,20 +987,37 @@ Le chemin est calculé automatiquement depuis la topologie de l'espace :
 
 ```
 WalkthroughSequence {
+  walkthroughId: string     // identifiant unique de session — référence stable pour toute la suite
   frames: Frame[]           // séquence ordonnée
   metadata: {
     spaceId: string
     path: PathPoint[]       // positions caméra dans l'espace
-    objectsEncountered: string[]  // objets dans l'ordre du parcours
+    objectsEncountered: string[]  // expressIds dans l'ordre du parcours
   }
 }
 
 Frame {
+  frameId: string           // identifiant unique — format : "{walkthroughId}:f{index}"
+  index: number             // position dans la séquence
+  type: FrameType           // 'entry' | 'overview' | 'approach' | 'inspection' | 'exit'
   image: ImageData          // rendu couleur IFC + AO + ombres
   position: [x, y, z]      // position caméra dans l'espace
   direction: [x, y, z]     // direction du regard
+  visibleObjectIds: string[] // tous les expressIds visibles dans ce frame (frustum)
   focusObjectId?: string    // objet ciblé si frame d'inspection
 }
+```
+
+**Concordance visuel ↔ SceneGraph**
+
+Chaque frame porte ses références. Quand l'agent identifie un objet dans une frame, il peut le relier au SceneGraph via `focusObjectId` ou `visibleObjectIds`. Toute interaction ultérieure (vérification, annotation, re-rendu) utilise ces mêmes IDs.
+
+```
+Agent reçoit frameId "wt_a3f:f4", visibleObjectIds ["1234", "1235", "890"]
+Agent : "l'objet cylindrique central est une chaudière"
+→ corrélation : expressId 1234 (focusObjectId du frame)
+→ stockage delta : { expressId: 1234, functionalType: "chaudière", source: "wt_a3f:f4" }
+→ renderObjectView("1234", { distance: 'close' }) si confirmation nécessaire
 ```
 
 Cette séquence est envoyée en un seul appel à l'IA. Elle reçoit le récit visuel complet de l'espace — exactement comme un inspecteur humain le parcourrait.
