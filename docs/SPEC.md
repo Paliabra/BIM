@@ -2,8 +2,10 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 5.0 — Avril 2026  
+> Version 5.1 — Avril 2026  
 > Statut : Référence de développement
+>
+> **Changelog 5.0 → 5.1** — refonte complète du sous-système vision : §9 étendue (chaîne d'extraction, moteurs orchestrés, profils canoniques, cadrage automatique, cache et auditabilité), §17.2 enrichie (séparation stricte des canaux, contrat avec le moteur de rendu), §17.5 ajoute le 6ᵉ volet « Complétude des rendus », nouvelle §22 « Palette de fallback IFC », glossaire enrichi.
 
 ---
 
@@ -17,7 +19,15 @@
 6. [Sélection libre de zone d'analyse](#6-sélection-libre-de-zone-danalyse)
 7. [Moteur de règles](#7-moteur-de-règles)
 8. [Éditeur de règles](#8-éditeur-de-règles)
-9. [Visualisation 3D](#9-visualisation-3d)
+9. [Visualisation 3D et sous-système de rendu](#9-visualisation-3d-et-sous-système-de-rendu)
+    - [9.0 Vue d'ensemble](#90-vue-densemble)
+    - [9.1 Visionneuse interactive](#91-visionneuse-interactive)
+    - [9.2 Chaîne d'extraction géométrique](#92-chaîne-dextraction-géométrique)
+    - [9.3 Moteurs de rendu — architecture trois paliers](#93-moteurs-de-rendu--architecture-trois-paliers)
+    - [9.4 Profils de rendu canoniques](#94-profils-de-rendu-canoniques)
+    - [9.5 Cadrage automatique](#95-cadrage-automatique)
+    - [9.6 Cache, reproductibilité et auditabilité](#96-cache-reproductibilité-et-auditabilité)
+    - [9.7 Contexte urbain (phase ultérieure)](#97-contexte-urbain-phase-ultérieure)
 10. [Recherche & Navigation](#10-recherche--navigation)
 11. [Annotations](#11-annotations)
 12. [Géoréférencement & Carte](#12-géoréférencement--carte)
@@ -36,6 +46,7 @@
 19. [Accès & Sauvegarde](#19-accès--sauvegarde)
 20. [Licences](#20-licences)
 21. [Glossaire](#21-glossaire)
+22. [Palette de fallback IFC (annexe normative)](#22-palette-de-fallback-ifc-annexe-normative)
 
 ---
 
@@ -628,33 +639,645 @@ L'utilisateur peut **basculer librement** entre les 3 modes. Une règle créée 
 
 ---
 
-## 9. Visualisation 3D
+## 9. Visualisation 3D et sous-système de rendu
 
-### Rendu
+### 9.0 Vue d'ensemble
 
-- Visionneuse 3D temps réel
-- Navigation standard : orbite, zoom, pan
+Le sous-système de rendu est un composant **central** du moteur, pas une fonctionnalité secondaire de visualisation. Il sert quatre rôles distincts qui conditionnent ses exigences :
+
+| Rôle | Destinataire | Cible de qualité |
+|---|---|---|
+| **Canal d'analyse autonome** | Agent IA (LLM multimodal) | Lisibilité géométrique nette, couleurs sémantiques contrastées, arêtes franches — exploitabilité par modèle de vision prime sur l'esthétique |
+| **Communication avec l'humain** | MOA, AMO, élus, équipes projet | Lisibilité architecturale, propre, agréable, équivalent à une présentation d'architecte |
+| **Preuve d'observation** | Tous destinataires d'un rapport d'analyse | Précision géométrique, cotation lisible, surimpressions (zones d'intérêt, anomalies signalées) |
+| **Audit a posteriori** | Vérification des analyses passées | Reproductibilité absolue, versioning des paramètres, cache adressable par hash |
+
+> **Positionnement** — Cet outil n'est **pas un moteur de rendu**. C'est un outil d'analyse qui produit les rendus dont il a besoin pour analyser et restituer. La cible esthétique du palier 3 s'apparente au style Twinmotion (PBR, ciel HDRI, ombres dures, sol matérialisé) sans en chercher la qualité matériaux artisanale, et le palier 4 (path tracing photoréaliste) reste optionnel pour les usages de communication exceptionnels.
+
+Le sous-système se compose de cinq étages techniques, spécifiés dans les sections suivantes :
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 9.2 — Extraction géométrique                            │
+│       (mesh + matières + journal de complétude)         │
+└──────────────┬──────────────────────────────────────────┘
+               ↓
+┌─────────────────────────────────────────────────────────┐
+│ 9.3 — Moteurs de rendu (3 paliers orchestrés)           │
+│       Palier 1 (rapide) | Palier 2 (style) | Palier 3   │
+└──────────────┬──────────────────────────────────────────┘
+               ↓
+┌─────────────────────────────────────────────────────────┐
+│ 9.4 — Profils canoniques                                │
+│       (identification, analyse étage, focalisation)     │
+└──────────────┬──────────────────────────────────────────┘
+               ↓
+┌─────────────────────────────────────────────────────────┐
+│ 9.5 — Cadrage automatique                               │
+│       (axe d'inertie + orientation façades)             │
+└──────────────┬──────────────────────────────────────────┘
+               ↓
+┌─────────────────────────────────────────────────────────┐
+│ 9.6 — Cache, reproductibilité, auditabilité             │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 9.1 Visionneuse interactive
+
+La visionneuse interactive (intégrée à l'application web) est l'expression temps-réel du sous-système de rendu, distincte des rendus offscreen produits pour l'agent IA.
+
+#### Rendu
+
+- Visionneuse 3D temps réel (WebGL2 / WebGPU si disponible)
+- Navigation standard : orbite, zoom, pan, vol libre (mode F)
 - Affichage multi-modèles simultané avec gestion de la visibilité par discipline
 
-### Outils de navigation fondamentaux
+#### Outils de navigation fondamentaux
 
 - **Coupes planes** — sections horizontales et verticales pour voir l'intérieur du modèle
 - **Arbre des objets IFC** — panneau de navigation dans la hiérarchie Site → Bâtiment → Étage → Local → Objet
-- **Filtres de visibilité** — afficher/masquer par discipline, par étage, par type d'objet
+- **Filtres de visibilité** — afficher/masquer par discipline, par étage, par type d'objet, par bâtiment détecté géométriquement
 - **Mesures manuelles** — cotation directe dans la vue (distance, surface, angle), indépendant du moteur de règles
 
-### Mise en exergue des résultats
+#### Mise en exergue des résultats
 
 - Les objets concernés par une vérification sont **mis en surbrillance directement dans la vue 3D**
 - Code couleur selon le statut : conforme / non conforme / avertissement
 - Sélection d'un résultat → isolation et focus sur l'objet dans la visionneuse
 - Export des objets sélectionnés ou filtrés
 
-### Chargement progressif
+#### Chargement progressif
 
 - L'interface 3D est accessible avant que le fichier soit entièrement chargé
 - Niveaux de détail (LOD) adaptés selon la distance de la caméra
 - Analyse en streaming : les vérifications peuvent démarrer sur les objets déjà chargés
+
+---
+
+### 9.2 Chaîne d'extraction géométrique
+
+#### Principe
+
+L'extraction des maillages depuis les entités IFC est l'étape la plus fragile du sous-système. Une extraction silencieusement défaillante (cf. cas Axtix : 37% des `IfcBuildingElementProxy` non triangulés sans aucune alerte) corrompt en cascade tous les rendus en aval, et donc toutes les analyses qui s'appuient sur le canal vision. La spec impose une discipline stricte de **journalisation par élément** et de **stratégie de repli graduée**.
+
+#### Architecture
+
+```
+IfcElement
+    ↓
+[ Extraction tentative — Niveau 1 : mesh complet ]
+    ↓ échec ?
+[ Extraction tentative — Niveau 2 : bbox simplifiée ]
+    ↓ échec ?
+[ Marqueur visuel — Niveau 3 : élément signalé absent ]
+    ↓
+Journal d'extraction (par élément)
+    ↓
+Agrégation : taux de complétude par classe, par bâtiment, global
+    ↓
+Métadonnées du rendu + alimentation Health Report (volet 6, §17.5)
+```
+
+#### Stratégie de repli à 3 niveaux
+
+| Niveau | Méthode | Usage de fallback |
+|---|---|---|
+| **L1 — Mesh complet** | Triangulation `ifcopenshell.geom.iterator` (ou équivalent natif WebAssembly) avec composition de placement absolu | Cas nominal, ~95% des éléments en moyenne sur maquettes saines |
+| **L2 — Bbox simplifiée** | Si la triangulation échoue ou dépasse le timeout, l'élément est représenté par sa bounding box orientée (OBB) déduite des points cartésiens accessibles | Cas des CSG profonds, des `IfcBuildingElementProxy` à géométrie complexe non manifold, des `MappedItem` à transformations multiples |
+| **L3 — Marqueur** | Si même la bbox n'est pas calculable (placement défaillant, géométrie absente), l'élément est représenté par un marqueur cubique 0.5×0.5×0.5m de couleur magenta vif (#FF00FF) à sa position déclarée, signalant visuellement l'anomalie | Cas extrêmes — typiquement <1% sur maquettes nominales, plus fréquent sur exports défaillants |
+
+#### Contrat d'extraction
+
+```typescript
+interface ExtractionResult {
+  elementId: string             // GUID IFC
+  status: 'L1' | 'L2' | 'L3'    // niveau de fallback effectivement utilisé
+  durationMs: number            // temps consommé
+  vertexCount?: number          // si L1
+  triangleCount?: number        // si L1
+  failureReason?: string        // si L2 ou L3 : raison documentée
+  fallbackBbox?: BoundingBox    // si L2
+}
+
+interface ExtractionJournal {
+  modelId: string
+  totalElements: number
+  byStatus: { L1: number, L2: number, L3: number }
+  byClass: Record<string, { L1: number, L2: number, L3: number }>
+  byBuilding?: Record<string, { L1: number, L2: number, L3: number }>
+  durationTotalMs: number
+  schemaVersion: string         // version du schéma de journal
+}
+```
+
+#### Seuils de complétude par profil
+
+Chaque profil de rendu (cf. §9.4) déclare un **taux de complétude minimal L1** acceptable. En dessous, le rendu est produit mais marqué partiel et l'agent IA en est informé dans son contexte.
+
+| Profil | Seuil L1 minimum | Comportement sous le seuil |
+|---|---|---|
+| Communication MOA, exports PDF | 95% | Filigrane *« RENDU PARTIEL — N% des éléments »* en bas du rendu, refus si < 80% |
+| Identification du projet (Skill 1) | 90% | Avertissement dans les métadonnées, le rendu est utilisable mais l'agent doit pondérer |
+| Analyse interne (Skill 2+) | 80% | Avertissement uniquement |
+| Débogage / diagnostic | 0% | Aucun seuil, tous les éléments visibles avec leur niveau de fallback codé en couleur |
+
+#### Exigences techniques
+
+- **Timeout par élément** : 5 secondes par défaut (configurable). Au-delà, repli L2.
+- **Timeout global** : 5 minutes par défaut pour une maquette de 500 Mo. Au-delà, abandon de l'extraction et rendu basé sur les éléments déjà extraits.
+- **Parallélisation** : extraction par batch sur N workers (N = `navigator.hardwareConcurrency` côté web, `os.cpu_count()` côté serveur).
+- **Cache d'extraction** : indexé par hash du fichier IFC + version du moteur d'extraction. Une maquette déjà extraite n'est pas re-extraite.
+
+---
+
+### 9.3 Moteurs de rendu — architecture trois paliers
+
+#### Principe d'orchestration
+
+La spec impose **trois paliers de rendu** correspondant à trois usages distincts. Aucun moteur unique ne couvre les trois — la spec retient une **architecture multi-moteur** orchestrée par une abstraction commune, exactement comme le `GeometryAIProvider` (§17.2) abstrait le fournisseur IA.
+
+| Palier | Cible esthétique | Temps cible | Moteur de référence v1 | Usage |
+|---|---|---|---|---|
+| **Palier 1 — Analyse rapide** | Viewer BIM standard (équivalent xeokit, Speckle) | 1 à 3 s par vue | `three.js` headless en Web Worker (offscreen canvas) ou `pyrender`+OSMesa pour batch serveur | Canal vision agent (passes 1–3 §17.2), parcours d'inspection, `renderObjectView` à la volée, génération massive pour le harnais de tests (§22) |
+| **Palier 2 — Style architectural** | Viewer BIM enrichi + lisibilité matériaux (équivalent Solibri, BIM Vision, *style* Twinmotion sans qualité matériaux artisanale) | 5 à 15 s par vue | `three.js` headless avec extensions PBR (KHR_materials_*) + ciel HDRI + shadow mapping de qualité | Fiches descriptives MOA, exports communicationnels, vue d'ensemble du Health Report, rendus du mode Describe |
+| **Palier 3 — Photoréaliste** | Path tracing (équivalent Cycles, V-Ray, Corona) | 1 à 5 min par vue | `Blender --background` avec moteur Cycles ; export glTF intermédiaire | **Optionnel** — usages exceptionnels (plaquette commerciale, presse, BIMobjet manager). Toujours en file d'attente asynchrone, jamais bloquant pour une analyse |
+
+#### Implémentation v1 et phasage
+
+**Spec complète, implémentation phasée.** La spec couvre les trois paliers dans leur architecture, leurs contrats et leurs comportements. L'implémentation v1 du moteur livre **uniquement le palier 1**. Les paliers 2 et 3 sont implémentés selon la roadmap (à définir hors spec).
+
+Cette discipline « spec complète, code phasé » garantit :
+- Que les contrats d'API (renderProfile, ToolReturn) sont stables dès la v1, pas refaits à chaque palier ajouté
+- Que le code v1 est nativement multi-moteur (l'abstraction `RenderProvider` existe dès le début)
+- Que l'arrivée des paliers 2 et 3 n'oblige aucune refonte des skills ni des appelants
+
+#### Contrat unifié — `RenderProvider`
+
+```typescript
+interface RenderProvider {
+  /**
+   * Identité du provider pour traçabilité dans les rendus.
+   * Convention : "<famille>-<version>", ex. "threejs-headless-r158", "cycles-3.6"
+   */
+  readonly providerId: string
+  
+  /**
+   * Palier auquel ce provider répond.
+   */
+  readonly tier: 1 | 2 | 3
+  
+  /**
+   * Capacités du provider — utilisé par l'orchestrateur pour vérifier
+   * qu'un profil de rendu est supportable.
+   */
+  readonly capabilities: {
+    pbr: boolean                      // matériaux Physically-Based Rendering
+    hdri: boolean                     // ciel HDRI
+    shadowMapping: 'none' | 'simple' | 'high'
+    ambientOcclusion: boolean
+    rayTracing: boolean
+    maxResolution: { width: number, height: number }
+    transparency: boolean
+  }
+  
+  /**
+   * Rendu d'une scène configurée.
+   * Le provider ne connaît pas les profils — il rend ce qu'on lui donne.
+   */
+  render(scene: RenderScene, options: RenderOptions): Promise<RenderResult>
+}
+
+interface RenderScene {
+  meshes: ExtractedMesh[]             // résultat de §9.2
+  camera: CameraSpec
+  lights: LightSpec[]
+  background: BackgroundSpec          // couleur unie, dégradé, HDRI
+  ground?: GroundSpec                 // sol matérialisé optionnel
+  annotations?: Annotation2D[]        // surimpressions 2D (cotes, légendes, flèche du nord)
+}
+
+interface RenderOptions {
+  width: number
+  height: number
+  outputFormat: 'png' | 'jpeg' | 'webp'
+  jpegQuality?: number                // 1-100 si jpeg
+  antialiasing: 'off' | 'fxaa' | 'msaa-4x' | 'msaa-8x'
+  seed?: number                       // pour reproductibilité (palier 3 path-traced)
+}
+
+interface RenderResult {
+  imageData: Uint8Array
+  durationMs: number
+  providerId: string                  // copie pour traçabilité
+  tierUsed: 1 | 2 | 3
+  warnings: string[]
+}
+```
+
+#### Orchestrateur — sélection de provider
+
+L'orchestrateur reçoit une demande de rendu (profil + paramètres + cible de qualité) et sélectionne le provider approprié.
+
+```typescript
+interface RenderOrchestrator {
+  /**
+   * Rendre selon un profil canonique (§9.4).
+   * L'orchestrateur compose la scène, choisit le provider selon le palier
+   * exigé par le profil, applique le cadrage automatique (§9.5) si non spécifié,
+   * consulte le cache (§9.6), et retourne le rendu.
+   */
+  renderProfile(
+    profileName: string,              // ex. "iso_canonique_se", "plan_etage_R1"
+    target: RenderTarget,             // modèle entier, bâtiment, zone, objet
+    overrides?: Partial<ProfileParams>  // surcharges du profil
+  ): Promise<ToolReturn<RenderManifest>>
+  
+  /**
+   * Liste des providers disponibles dans cette installation.
+   */
+  listProviders(): RenderProvider[]
+  
+  /**
+   * Forcer un palier (utilisé pour comparer la qualité ou pour tests).
+   */
+  setTierPolicy(policy: TierPolicy): void
+}
+
+type RenderTarget =
+  | { kind: 'model', modelId: string }
+  | { kind: 'building', buildingId: string }   // bâtiment détecté géométriquement
+  | { kind: 'storey', storeyId: string }
+  | { kind: 'zone', zoneId: string }            // zone libre (§6)
+  | { kind: 'object', objectId: string }
+  | { kind: 'objects', objectIds: string[] }
+  
+type TierPolicy = 'auto' | 'min' | 'tier1' | 'tier2' | 'tier3'
+```
+
+#### Outil MCP exposé à l'agent
+
+```typescript
+// — Rendu (canal vision agent) —
+tool renderProfile(
+  profile: string,                    // nom du profil canonique (§9.4)
+  target: RenderTarget,
+  overrides?: object                  // surcharges des paramètres du profil
+): ToolReturn<RenderManifest>         // image + manifest complet
+```
+
+Le `RenderManifest` retourné est documenté en §9.6 (auditabilité).
+
+---
+
+### 9.4 Profils de rendu canoniques
+
+#### Principe
+
+Un profil est une **configuration nommée et versionnée** d'une scène de rendu. Il fixe : la composition (cadrage, caméra, lumières), la palette (couleurs sémantiques ou matériaux IFC), les annotations (échelle, flèche du nord, légendes), le palier de moteur exigé, le seuil de complétude requis (§9.2).
+
+Les profils sont stockés en YAML versionnable dans le dépôt du projet. Un profil par défaut est livré pour chaque nom canonique ; l'utilisateur peut forker un profil pour ses besoins (même mécanique que les règles, §7).
+
+#### Famille A — Profils d'identification du projet
+
+Utilisés par le skill `project-understanding` (Skill 1).
+
+| Profil | But | Caméra | Notes |
+|---|---|---|---|
+| **`plan_masse_zenithal`** | Vue strictement zénithale du projet entier dans son contexte | Orthographique, axe Z descendant | Cadrage sur enveloppe totale + 10% de marge, sol matérialisé, ombres douces, flèche du Nord au Nord vrai, échelle métrique en bas |
+| **`iso_canonique_se`** | Vue isométrique sud-est calculée sur l'axe principal du projet | Perspective ~30° élévation, azimut = (axe_principal + 135°) | Cadrage automatique §9.5, sol vert simple, soleil sud-ouest 45°, ciel uniforme |
+| **`iso_canonique_nw`** | Vue isométrique nord-ouest, complémentaire de la sud-est | Azimut = (axe_principal − 45°) | Mêmes paramètres que sud-est avec rotation 180° |
+| **`roof_plan`** | Vue zénithale ne montrant que les éléments hauts (toitures, terrasses, équipements de toiture) | Orthographique zénithale, filtre Z ≥ Z_max(modèle) − 1.5m | Révèle les empreintes des toits indépendamment du bâti dessous, équivalent du « toits seuls » |
+| **`elevation_sud`** | Élévation orthographique depuis le sud | Orthographique, direction = Nord | Cotes de niveaux annotées (RDC, R+1…), échelle métrique latérale |
+| **`elevation_est`** | Élévation orthographique depuis l'est | Orthographique, direction = Ouest | Idem |
+| **`elevation_nord`**, **`elevation_ouest`** | Élévations complémentaires | Selon | Produites uniquement si le bâtiment a des façades dans l'orientation correspondante |
+
+#### Famille B — Profils analytiques par étage
+
+Utilisés par les skills d'analyse interne (logements, équipements, circulations).
+
+| Profil | But | Caméra | Notes |
+|---|---|---|---|
+| **`plan_etage_<storeyId>`** | Vue zénithale filtrée sur un étage donné | Orthographique zénithale, filtre Z ∈ [storey.elevation, storey.elevation + storey.height − 0.3m] | Mobilier et équipements optionnels (paramètre `includeFurniture`), équivalent plan d'architecte sans annotations textuelles |
+| **`coupe_axe_NS`** | Coupe verticale par l'axe nord-sud principal | Orthographique, direction = Est, plan de coupe = X = X_central(projet) | Permet de lire la stratification verticale, escaliers, volumes traversants |
+| **`coupe_axe_EO`** | Coupe verticale par l'axe est-ouest principal | Orthographique, direction = Sud, plan de coupe = Y = Y_central(projet) | Idem |
+| **`coupe_personnalisee`** | Coupe verticale par un plan défini par 2 points | Orthographique, plan défini par paramètres | Pour analyses ad-hoc |
+
+#### Famille C — Profils de focalisation
+
+Utilisés pour les analyses ciblées et les preuves d'observation.
+
+| Profil | But | Caméra | Notes |
+|---|---|---|---|
+| **`focus_object`** | Vue centrée sur un objet, contexte estompé | Perspective, distance/angle paramétrables | Étend `renderObjectView` (§17.2) avec gestion du contexte estompé (objets voisins en transparence 30%) |
+| **`focus_zone`** | Vue centrée sur une bbox arbitraire | Perspective, distance calculée pour 60% d'occupation | Pour zones libres (§6) ou regroupement d'objets |
+| **`walkthrough_space`** | Séquence d'inspection d'un espace | Voir §17.2 (déjà spécifié) | Reste inchangé — ce profil délègue à `renderSpaceWalkthrough` |
+| **`facade_focus`** | Élévation focalisée d'une façade | Orthographique perpendiculaire à la façade | La façade est identifiée par PCA des normales des murs verticaux (§9.5) ou désignée explicitement |
+
+#### Format YAML d'un profil
+
+Chaque profil est un fichier `<profile_name>.profile.yaml` sous `renderer/profiles/` :
+
+```yaml
+---
+name: iso_canonique_se
+version: 1.0.0
+description: |
+  Vue isométrique sud-est calculée sur l'axe principal du projet.
+  Cadrage automatique sur l'enveloppe totale avec 10% de marge.
+  Lumière soleil sud-ouest, ciel uniforme bleu pâle.
+
+tier: 1                                # palier minimum requis
+fallback_tier: 1                       # palier acceptable si le minimum indispo
+min_completeness_l1: 0.90              # seuil §9.2
+
+camera:
+  projection: perspective
+  fov_deg: 33
+  azimuth_deg: auto+135                # auto = axe principal projet
+  elevation_deg: 30
+  framing: auto                        # cadrage par §9.5
+  framing_margin: 0.10                 # 10% de respiration
+
+lights:
+  - type: directional                  # soleil
+    azimuth_deg: 225
+    elevation_deg: 45
+    intensity: 4.5
+    color: [1.0, 0.96, 0.88]           # blanc chaud
+  - type: directional                  # ciel
+    direction: [0, 0, -1]
+    intensity: 1.8
+    color: [0.65, 0.75, 0.92]          # bleu froid
+  - type: ambient
+    intensity: 0.4
+
+background:
+  type: gradient
+  top: [0.85, 0.88, 0.92]              # ciel clair
+  bottom: [0.92, 0.94, 0.97]           # ciel sol
+
+ground:
+  enabled: true
+  color: [0.45, 0.51, 0.41]            # vert herbe
+  size_m: 250                          # carré 250×250m centré sur projet
+
+palette: ifc_with_fallback             # cf. §22
+
+annotations:
+  north_arrow: true
+  scale_bar: true
+  building_labels: false               # peut être true via override
+  watermark_partial: true              # filigrane si < seuil L1
+
+resolution:
+  default: { width: 1920, height: 1200 }
+  thumbnail: { width: 480, height: 300 }
+---
+```
+
+#### Surcharge de profil
+
+L'agent ou l'utilisateur peut surcharger un profil sans le forker, via le paramètre `overrides` de `renderProfile` :
+
+```typescript
+renderProfile('iso_canonique_se', { kind: 'model', modelId: 'm1' }, {
+  camera: { elevation_deg: 60 },       // vue plus surplombante
+  resolution: { width: 3840, height: 2400 }  // 4K pour export
+})
+```
+
+#### Versioning des profils
+
+Chaque profil porte sa version semver. Une mise à jour des profils par défaut est tracée dans le changelog du dépôt. Un projet peut figer une version de profil pour garantir la stabilité des analyses sur la durée :
+
+```yaml
+# Dans le projet utilisateur
+renderer:
+  pinned_profiles:
+    iso_canonique_se: "1.0.0"          # ne suit pas les futures mises à jour
+```
+
+---
+
+### 9.5 Cadrage automatique
+
+#### Principe
+
+Un cadrage arbitraire (sud-est canonique sans tenir compte de la composition réelle du projet) produit des vues qui ratent l'axe principal et compromettent la lecture par le canal vision. Le cas Axtix l'a démontré : un projet aligné nord-ouest/sud-est présenté en ISO sud-est arbitraire devient illisible. La spec impose un **cadrage calculé par analyse géométrique** quand le profil le demande (`framing: auto`).
+
+#### Algorithme
+
+```
+Étape 1 — Sélection des points de référence
+  • Centroïdes XY des bâtiments détectés géométriquement (§5)
+  • Filtre des outliers (§9.2 niveau L3 exclus du cadrage)
+
+Étape 2 — Calcul de l'axe principal d'inertie
+  • PCA 2D sur les centroïdes
+  • Vecteur propre de plus grande variance = axe principal
+  • Angle de cet axe par rapport au Nord = orientation_projet
+
+Étape 3 — Vérification par les façades (raffinement)
+  • Extraction des normales des murs verticaux (IfcWall.angle vs Z = 90° ± 5°)
+  • PCA sur les normales projetées en XY
+  • Si les deux modes principaux des normales font ~90° entre eux,
+    leur orientation est l'orientation_façades
+  • Si orientation_projet et orientation_façades divergent de plus de 15°,
+    privilégier orientation_façades (porte mieux l'intention architecturale)
+
+Étape 4 — Calcul de la bbox cadrée dans le repère orienté
+  • Rotation des coordonnées dans le repère (axe_principal, perpendiculaire)
+  • Bbox dans ce repère + marge (paramètre framing_margin)
+  • Position caméra calculée pour que la bbox + marge remplisse le viewport
+
+Étape 5 — Adaptation à l'orientation de profil
+  • Profil ISO_SE → caméra à (axe + 135°, élévation, distance)
+  • Profil ISO_NW → caméra à (axe − 45°, élévation, distance)
+  • Profil ELEVATION_SUD → caméra perpendiculaire à façade sud (orthographique)
+```
+
+#### Contrat
+
+```typescript
+interface FramingComputation {
+  /**
+   * Calcule un cadrage automatique pour un target donné.
+   * Retourne aussi les éléments de diagnostic (axe trouvé, méthode utilisée).
+   */
+  compute(
+    target: RenderTarget,
+    profile: RenderProfile
+  ): FramingResult
+}
+
+interface FramingResult {
+  cameraPose: { position: Vec3, target: Vec3, up: Vec3 }
+  diagnostics: {
+    method: 'pca_centroids' | 'pca_normals' | 'fallback_north'
+    principalAxisAngleDeg: number     // par rapport au Nord
+    confidence: number                 // 0–1, basé sur le rapport des valeurs propres PCA
+    bboxRotated: BoundingBox           // bbox dans le repère orienté
+  }
+  warnings: string[]                   // ex. "Confiance PCA faible (0.3) — axe peut être indéterminé"
+}
+```
+
+#### Cas dégradés
+
+| Situation | Comportement |
+|---|---|
+| Un seul bâtiment détecté, plan compact (rapport longueur/largeur < 1.3) | PCA des normales prime ; si elle est aussi indéterminée, fallback Nord vrai |
+| Aucun mur vertical exploitable (cas `IfcBuildingElementProxy` exclusivement) | Fallback Nord vrai, warning émis |
+| Plusieurs bâtiments dispersés sans alignement clair (PCA confidence < 0.5) | Cadrage selon Nord vrai, warning *"Pas d'axe principal clair, cadrage sur Nord vrai"* |
+| `framing: manual` dans le profil ou override | Le calcul automatique est court-circuité, paramètres caméra fournis directement |
+
+---
+
+### 9.6 Cache, reproductibilité et auditabilité
+
+#### Principe
+
+Tout rendu produit par le sous-système doit pouvoir être **rejoué à l'identique** ultérieurement, et tout rendu coûteux doit être **mis en cache**. C'est la condition pour que les analyses qui s'appuient sur le canal vision soient auditables, et pour que le système supporte les paliers 2 et 3 sans recalcul systématique.
+
+#### Manifest de rendu
+
+Chaque rendu produit accompagne le PNG d'un manifest YAML/JSON contenant tout ce qui est nécessaire pour le rejouer ou le vérifier :
+
+```typescript
+interface RenderManifest {
+  // Identification
+  renderId: string                    // UUID
+  timestamp: string                   // ISO 8601
+  
+  // Source
+  modelId: string
+  ifcSourceHash: string               // SHA-256 du fichier IFC
+  deltaVersion?: string               // version de la couche delta si appliquée
+  
+  // Profil et paramètres
+  profileName: string
+  profileVersion: string              // semver du profil
+  effectiveParams: object             // paramètres après application des overrides
+  
+  // Provider et performance
+  providerId: string                  // ex. "threejs-headless-r158"
+  tierUsed: 1 | 2 | 3
+  durationMs: number
+  
+  // Complétude
+  extractionCompleteness: {
+    overall: number                    // taux global L1 (0–1)
+    byClass: Record<string, number>    // par classe IFC
+    elementsRendered: number
+    elementsFallbackL2: number
+    elementsFallbackL3: number
+  }
+  
+  // Cadrage (si automatique)
+  framingDiagnostics?: FramingResult['diagnostics']
+  
+  // Avertissements
+  warnings: string[]                   // ex. "Toitures rendues à 23% — fiabilité dégradée"
+}
+```
+
+#### Cache adressable par hash
+
+```
+Clé de cache = hash(
+  ifcSourceHash +
+  deltaVersion +
+  profileName + profileVersion +
+  effectiveParams (sérialisé canonique) +
+  providerId
+)
+```
+
+Tant que tous ces éléments sont identiques, le rendu est servi depuis le cache. Une modification de la couche delta invalide les rendus qu'elle affecte (calculé via la traçabilité géométrique §14).
+
+```typescript
+interface RenderCache {
+  /**
+   * Lecture cache.
+   * Retourne null si le rendu n'est pas en cache ou si le cache est invalidé.
+   */
+  get(cacheKey: string): Promise<RenderResult | null>
+  
+  /**
+   * Écriture cache.
+   * TTL configurable, par défaut illimité.
+   */
+  put(cacheKey: string, result: RenderResult, manifest: RenderManifest, ttlSec?: number): Promise<void>
+  
+  /**
+   * Invalidation par modèle ou par delta.
+   * Appelé automatiquement lorsque l'IFC source change ou la couche delta est modifiée.
+   */
+  invalidate(modelId: string, options?: { onlyDeltaAffected?: boolean }): Promise<number>
+  
+  /**
+   * Statistiques d'utilisation pour monitoring.
+   */
+  stats(): CacheStats
+}
+```
+
+#### Reproductibilité
+
+Pour le palier 3 (path tracing), la reproductibilité exacte exige aussi de fixer les graines aléatoires. Le manifest enregistre `effectiveParams.seed`, et le provider est tenu de produire un résultat bit-à-bit identique pour deux exécutions avec la même graine.
+
+#### Ressources MCP
+
+```
+resource render://manifest/{renderId}        → manifest complet d'un rendu
+resource render://cache/stats                → statistiques globales du cache
+resource render://profiles                   → liste des profils disponibles avec leurs versions
+resource render://profile/{profileName}     → définition complète d'un profil
+```
+
+---
+
+### 9.7 Contexte urbain (phase ultérieure)
+
+#### Principe
+
+Quand un projet est correctement géoréférencé (diagnostic §12 = `Formel` ou `Déductif` avec haute confiance), le sous-système peut récupérer le **contexte urbain immédiat** depuis OpenStreetMap (bâtiments voisins, voirie, parcelles cadastrales si disponibles) et l'incorporer aux rendus comme **contexte 3D simplifié** (extrusions de bâtiments, sol matérialisé route/trottoir/parc).
+
+C'est ce qui permet de produire des rendus *« voici votre projet dans son quartier réel »*, démarcation forte vis-à-vis des viewers BIM classiques qui isolent la maquette de son contexte.
+
+#### Statut
+
+Cette fonctionnalité est **spécifiée dans les principes** mais **non implémentée en v1**. Elle dépend de plusieurs chantiers connexes qui doivent être stabilisés avant :
+
+- Diagnostic de géoréférencement fiable et widely deployed (§12 — déjà spec, à valider en production)
+- Chaîne d'extraction OSM → 3D simplifié (intégration `osmnx`, `blender-osm`, ou équivalent web)
+- Gestion des droits d'usage des tuiles cartographiques selon fournisseur
+- Cache des extractions OSM (les requêtes Overpass sont coûteuses)
+
+#### Contrat anticipé
+
+```typescript
+interface UrbanContextProvider {
+  /**
+   * Récupère le contexte urbain dans un rayon donné autour d'un point géoréférencé.
+   */
+  fetch(
+    centerLatLon: [number, number],
+    radiusM: number,
+    options?: {
+      includeBuildings: boolean        // défaut true
+      includeRoads: boolean            // défaut true
+      includeWater: boolean            // défaut true
+      includeVegetation: boolean       // défaut false
+      simplificationLevel: 'high' | 'medium' | 'low'  // détail des extrusions
+    }
+  ): Promise<UrbanContextScene>
+}
+```
+
+Les profils de rendu peuvent référencer `urban_context: true` dans leur YAML pour activer l'inclusion automatique. La spec garantit que ce paramètre est inerte tant que la fonctionnalité n'est pas implémentée — il sera activé sans changement de contrat ni des profils.
 
 ---
 
@@ -1197,11 +1820,15 @@ L'agent dispose de la même liberté qu'un expert humain qui s'approche, recule,
 
 #### Données transmises au modèle de vision
 
+**Contrat avec le sous-système de rendu** — toute frame transmise à un modèle de vision est produite par les profils canoniques §9.4, via l'orchestrateur §9.3. Cela garantit que le rendu transmis au LLM est tracé (manifest §9.6), reproductible, et conforme aux seuils de complétude exigés (§9.2). Le code de la reconnaissance visuelle ne contient **aucune logique de rendu** — il appelle `renderProfile(...)` et reçoit les images. Cette séparation des responsabilités est une exigence de spec, pas une convention.
+
 Pour chaque appel, l'agent transmet :
 
 ```
 Séquence de frames du parcours d'inspection (images PNG rendues localement)
-  — couleurs IFC réelles, AO, ombres, caméra cohérente entre frames
+  — produites par profils §9.4 (typiquement walkthrough_space, focus_object)
+  — couleurs IFC réelles (palette §22 en fallback), AO, ombres, caméra cohérente
+  — manifest §9.6 disponible pour audit
   +
 Contexte textuel structuré :
   - Passe précédente : discipline identifiée, type de zone
@@ -1212,7 +1839,35 @@ Contexte textuel structuré :
   - Index du parcours : objets rencontrés dans l'ordre
 ```
 
-Le fichier IFC source n'est **jamais transmis** — seulement des frames rendues localement depuis le moteur Three.js et des métadonnées géométriques agrégées.
+Le fichier IFC source n'est **jamais transmis** — seulement des frames rendues localement et des métadonnées géométriques agrégées.
+
+#### Indépendance stricte des canaux (mode audit)
+
+Le score composite (cf. plus bas) suppose l'indépendance des trois canaux IFC, IA, cohérence spatiale. Quand le contexte textuel transmis à l'IA inclut l'`ifcType déclaré`, cette indépendance est imparfaite : l'IA peut être biaisée par le hint, même si elle est instruite de le traiter comme un indice non contraignant.
+
+La spec impose donc deux modes :
+
+| Mode | Contexte transmis à l'IA | Usage |
+|---|---|---|
+| **Standard** (défaut) | Tous les indices y compris `ifcType` déclaré | Optimal pour la performance et la convergence rapide. Convient à la majorité des analyses |
+| **Strict** (audit) | Frames + dimensions + topologie uniquement, **sans** `ifcType` ni nom d'objet | Requis pour les analyses dont la fiabilité doit être auditable, les rapports d'écart déclaration ↔ observation, les contributions au corpus de validation |
+
+Le mode est sélectionnable par appel via `recognizeObject(..., { mode: 'strict' })`. Le mode utilisé est consigné dans le SceneGraph enrichi pour traçabilité.
+
+#### Traçabilité de production
+
+Le SceneGraph enrichi conserve, pour chaque score composite, la séquence de production des trois sous-scores (ordre temporel, contexte effectivement transmis à chaque canal, manifest des rendus utilisés). Cette trace est auditable a posteriori via :
+
+```
+resource scenegraph://provenance/{objectId}
+→ {
+    ifc:     { score: 0.0, source: "IfcBuildingElementProxy" },
+    ai:      { score: 0.87, mode: "strict", renderManifests: ["render_a3f...", "render_b21..."] },
+    spatial: { score: 0.72, neighbours: [...] },
+    composite: 0.76,
+    weights: [0.0, 0.7, 0.3]
+  }
+```
 
 #### Fournisseur IA — abstraction et évolution
 
@@ -1549,7 +2204,7 @@ Un panneau dédié affiche l'état de la reconnaissance visuelle :
 
 ### 17.5 Rapport de santé du modèle
 
-À l'ouverture de tout modèle, l'environnement produit automatiquement un **rapport de santé** — un diagnostic de l'état du fichier IFC selon cinq volets. Ce rapport est disponible immédiatement, avant toute analyse métier.
+À l'ouverture de tout modèle, l'environnement produit automatiquement un **rapport de santé** — un diagnostic de l'état du fichier IFC selon six volets. Ce rapport est disponible immédiatement, avant toute analyse métier.
 
 | Volet | Ce qui est évalué |
 |---|---|
@@ -1558,8 +2213,9 @@ Un panneau dédié affiche l'état de la reconnaissance visuelle :
 | **Population attributaire** | Taux d'objets avec un `IfcType` précis, un nom non vide, un niveau renseigné |
 | **Fermeture géométrique** | Espaces non fermés, murs non jointifs, trous dans planchers — incohérences topologiques |
 | **Cohérence schéma** | Adéquation entre la déclaration IFC (hiérarchie Site/Bâtiment/Étage) et la structure physique réelle détectée |
+| **Complétude des rendus** | Taux global d'extraction L1 (cf. §9.2) ; détail par classe IFC ; identification des classes pour lesquelles le canal vision est dégradé. Sur Axtix, ce volet aurait remonté immédiatement « toitures extraites à 23% — fiabilité dégradée des analyses visuelles » |
 
-**Score de santé global** : moyenne pondérée des cinq volets, configurable (0–100). Affiché dans un panneau dédié à l'ouverture.
+**Score de santé global** : moyenne pondérée des six volets, configurable (0–100). Affiché dans un panneau dédié à l'ouverture.
 
 ```
 resource scenegraph://healthreport/{modelId}
@@ -1669,3 +2325,96 @@ Licence permissive incluant une **clause de protection sur les brevets**. Tout c
 | **GEOMETRIC_CONNECTIVITY** | Famille de règles vérifiant la connectivité des équipements à leurs réseaux (plomberie, CVC, électrique) par distance surface-à-surface entre maillages — sans dépendre des relations IFC déclarées. |
 | **queryMeshDistance** | Outil MCP calculant la distance minimale surface-à-surface entre les maillages géométriques de deux objets (en mm). Fondement de la vérification GEOMETRIC_CONNECTIVITY. Phase 0 : approximation vertex, Phase 2 : BVH exact. |
 | **Distance surface-à-surface** | Distance minimale entre les surfaces géométriques réelles de deux objets, distincte de la distance entre leurs centres ou leurs bbox. Nulle quand deux éléments se touchent, mesurable quand ils sont déconnectés. |
+| **RenderProvider** | Implémentation concrète d'un moteur de rendu (three.js headless, Cycles…). Expose un contrat unifié `render(scene, options)` indépendant du moteur. La spec en distingue trois paliers (§9.3). |
+| **Palier de rendu** | Niveau de qualité/performance d'un moteur de rendu : palier 1 (rapide, ~1-3s, viewer BIM), palier 2 (style architectural, ~5-15s), palier 3 (photoréaliste, ~1-5min, optionnel). |
+| **Profil de rendu** | Configuration nommée et versionnée d'une scène (cadrage, caméra, lumières, palette, annotations) qui répond à une question précise (§9.4). Stocké en YAML, forkable comme une règle. |
+| **Cadrage automatique** | Calcul de la position caméra à partir de l'axe principal d'inertie du projet (PCA centroïdes) raffiné par l'orientation des façades (PCA normales murs verticaux). §9.5. |
+| **Manifest de rendu** | Métadonnées attachées à chaque rendu produit : profil utilisé, version moteur, paramètres effectifs, complétude d'extraction, hash IFC source. Fondement de l'auditabilité (§9.6). |
+| **Extraction L1/L2/L3** | Stratégie de fallback à 3 niveaux pour la triangulation des éléments IFC : L1 = mesh complet, L2 = bbox simplifiée, L3 = marqueur magenta. §9.2. |
+| **Complétude d'extraction** | Pourcentage d'éléments correctement triangulés en L1 sur le total tenté. Constitue le 6ᵉ volet du Health Report (§17.5). |
+| **Mode strict (vision)** | Mode d'appel au modèle de vision où le contexte transmis exclut `ifcType` et nom d'objet, garantissant l'indépendance du canal IA des canaux IFC et attributaire. Requis pour les analyses auditables. §17.2. |
+| **Palette de fallback IFC** | Bibliothèque versionnée de couleurs et matériaux par défaut appliqués aux objets IFC sans `IfcStyledItem` ni `IfcMaterial` exploitable. §22. |
+
+---
+
+## 22. Palette de fallback IFC (annexe normative)
+
+### Principe
+
+Quand un objet IFC ne porte pas de matériau ou de style exploitable (`IfcStyledItem`, `IfcSurfaceStyle`, `IfcMaterial` absents ou réduits à des valeurs invalides), le sous-système de rendu (§9) applique une **palette de fallback par défaut**. Cette palette est versionnée et publiée comme annexe normative pour garantir :
+
+- La **cohérence visuelle** entre rendus successifs du même modèle
+- La **comparabilité** entre rendus de modèles différents
+- La **lisibilité sémantique** par le canal vision agent (les classes IFC sont visuellement distinctes)
+- La **stabilité dans le temps** (un rendu produit aujourd'hui aura les mêmes couleurs de fallback dans cinq ans, sauf changement de version palette explicite)
+
+### Palette par défaut — version 1.0.0
+
+Couleurs au format hexadécimal RGB. Les matériaux PBR (palier 2+) ajoutent rugosité (R), métallicité (M), réflexion (Refl).
+
+| Classe IFC | Couleur RGB | R | M | Refl | Notes |
+|---|---|---|---|---|---|
+| `IfcWall`, `IfcWallStandardCase` | `#D9D4C8` | 0.8 | 0.0 | 0.05 | Béton/enduit clair, mat |
+| `IfcSlab` (sol) | `#A89F8E` | 0.7 | 0.0 | 0.10 | Béton brut, légèrement réfléchissant |
+| `IfcSlab` (toiture-terrasse) | `#5A5650` | 0.9 | 0.0 | 0.02 | Étanchéité bitumineuse |
+| `IfcRoof` | `#A05D3F` | 0.85 | 0.0 | 0.05 | Tuile cuite |
+| `IfcColumn`, `IfcBeam` | `#9E9587` | 0.75 | 0.0 | 0.05 | Béton ou bois — défaut neutre |
+| `IfcDoor` | `#8B6F47` | 0.6 | 0.0 | 0.15 | Bois moyen |
+| `IfcWindow` (cadre) | `#3A3A3A` | 0.4 | 0.5 | 0.30 | Aluminium ou PVC sombre |
+| `IfcWindow` (vitrage) | `#A8C5DD` (alpha 0.35) | 0.05 | 0.0 | 0.85 | Verre, transparent |
+| `IfcStair`, `IfcStairFlight` | `#7A7167` | 0.7 | 0.0 | 0.10 | Béton |
+| `IfcRailing` | `#5A5A5A` | 0.4 | 0.6 | 0.40 | Acier ou aluminium brossé |
+| `IfcCovering` (plafond) | `#F2EFE8` | 0.85 | 0.0 | 0.05 | Plâtre peint blanc |
+| `IfcCovering` (sol) | `#8B7C5F` | 0.65 | 0.0 | 0.15 | Bois ou stratifié moyen |
+| `IfcFurnishingElement` | `#A88E6E` | 0.7 | 0.0 | 0.10 | Bois ameublement |
+| `IfcSanitaryTerminal` | `#FAFAFA` | 0.3 | 0.0 | 0.40 | Céramique blanche |
+| `IfcFlowTerminal` | `#7A7A7A` | 0.4 | 0.6 | 0.30 | Métal — diffuseur, bouche, terminal |
+| `IfcSpace` | `#FFE89A` (alpha 0.20) | — | — | — | Volume éclairé jaune transparent (uniquement en mode debug ou profil analytique) |
+| `IfcBuildingElementProxy` | `#C49E80` | 0.7 | 0.0 | 0.05 | Beige neutre — signe la non-classification, sera relayé par couleur sémantique si reconnu IA |
+| `IfcBuildingElementPart` | `#B8A088` | 0.7 | 0.0 | 0.05 | Variante plus claire pour distinguer sous-composants |
+| `IfcOpeningElement` | non rendu | — | — | — | Réservation, jamais rendue |
+| `IfcAnnotation` | non rendu par défaut | — | — | — | Profil debug uniquement |
+| **Élément en fallback L2** | `#FFB347` | 0.9 | 0.0 | 0.0 | Orange visible — bbox simplifiée signalée |
+| **Élément en fallback L3** | `#FF00FF` | 0.5 | 0.0 | 0.0 | Magenta vif — anomalie explicite (§9.2) |
+
+### Mode "couleurs sémantiques par classe" (override)
+
+Pour le canal vision agent (palier 1, profils d'identification), la spec recommande optionnellement un mode où **chaque classe IFC majeure prend une couleur fortement distincte** indépendamment de tout matériau IFC. Cela améliore la lisibilité par le LLM multimodal.
+
+```yaml
+# Override applicable à un profil §9.4
+palette: semantic_classes_v1
+```
+
+| Classe | Couleur sémantique |
+|---|---|
+| `IfcWall` | `#E0CDA8` (sable) |
+| `IfcSlab` | `#9CA0A8` (gris bleuté) |
+| `IfcRoof` | `#C44E2A` (terre cuite vif) |
+| `IfcColumn`, `IfcBeam` | `#5C4A3A` (brun foncé) |
+| `IfcDoor` | `#8B4513` (marron franc) |
+| `IfcWindow` | `#4A90D9` (bleu vif) |
+| `IfcStair` | `#9B59B6` (violet) |
+| `IfcSpace` | `#F1C40F` (jaune vif) |
+| `IfcBuildingElementProxy` | `#EC7063` (rouge corail — signal de non-classification) |
+
+Le mode sémantique n'est **jamais** utilisé pour la communication MOA — il est explicitement réservé au canal agent et au mode debug.
+
+### Versioning de la palette
+
+La palette est versionnée en semver. Toute modification fait l'objet d'un changelog dans le dépôt. Un projet peut figer une version :
+
+```yaml
+# Dans le projet utilisateur
+renderer:
+  palette_version: "1.0.0"
+```
+
+### Évolution
+
+Les futures versions de la palette pourront enrichir :
+- Variations contextuelles (matériau différent selon position : `IfcWall` extérieur vs intérieur)
+- Inférence de matériau par mots-clés du `Name` (ex. `mur_brique` → texture brique)
+- Support de `IfcMaterialLayerSet` pour les murs multicouches
+
+Ces enrichissements sont **opt-in** et marqués comme tels dans les manifests de rendu pour ne pas être confondus avec une lecture fidèle des matériaux IFC source.
