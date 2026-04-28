@@ -2,7 +2,7 @@
 
 # Spécification — Visionneuse IFC avec Analyse Spatiale
 
-> Version 4.6 — Avril 2026  
+> Version 5.0 — Avril 2026  
 > Statut : Référence de développement
 
 ---
@@ -31,6 +31,7 @@
     - [17.2 Reconnaissance visuelle](#172-reconnaissance-visuelle)
     - [17.3 Agent de Vérification Intelligent](#173-agent-de-vérification-intelligent)
     - [17.4 Interface IA](#174-interface-ia)
+    - [17.5 Rapport de santé du modèle](#175-rapport-de-santé-du-modèle)
 18. [Contraintes de performance](#18-contraintes-de-performance)
 19. [Accès & Sauvegarde](#19-accès--sauvegarde)
 20. [Licences](#20-licences)
@@ -42,11 +43,15 @@
 
 ### Principe fondamental
 
-> Un fichier IFC est une carte. Chaque objet possède une **définition** (ce qu'il est) et une **position** (où il est). L'analyse consiste à comparer, regrouper et mesurer ces objets selon leurs positions et leurs relations spatiales.
+> Toute maquette qui entre dans cet environnement cesse d'être inerte. Sa géométrie parle.
 
-La visionneuse adopte une logique **SIG (Système d'Information Géographique)** appliquée au bâtiment.
+Cet outil n'est pas une visionneuse. C'est un **environnement de compréhension** : un milieu actif dans lequel une maquette IFC est absorbée, lue et restituée comprise — sans configuration préalable, sans intervention de l'utilisateur. Dès l'entrée du fichier, la géométrie est parsée, les relations spatiales calculées, les bâtiments physiques détectés, l'état du modèle évalué, la reconnaissance visuelle lancée. Le modèle ne ressort pas tel qu'il est entré.
 
-| SIG | Cette visionneuse |
+Un fichier IFC est un modèle spatial : chaque objet possède une **définition** (ce qu'il est) et une **position** (où il est). Ce que les outils classiques lisent comme des attributs à interroger, cet environnement le lit comme une **structure spatiale à comprendre**. La géométrie est la source de vérité — pas les étiquettes, pas les noms, pas la rigueur du modeleur.
+
+L'environnement adopte une logique **SIG (Système d'Information Géographique)** appliquée au bâtiment : les objets sont d'abord des corps dans l'espace, leurs relations sont géométriques, et c'est depuis cette géométrie que tout le reste est déduit.
+
+| SIG | Cet environnement |
 |---|---|
 | Carte géographique | Maquette IFC |
 | Couches (routes, bâtiments…) | Disciplines (ARC, ELEC, STR…) |
@@ -55,12 +60,14 @@ La visionneuse adopte une logique **SIG (Système d'Information Géographique)**
 
 ### Paradigme différenciateur
 
-| Visionneuses classiques | Cette visionneuse |
+| Outils classiques | Cet environnement |
 |---|---|
-| Interrogation par propriétés déclarées | Analyse par géométrie et position |
+| Outil passif — le modèle reste inerte | Milieu actif — le modèle est décrypté à l'entrée |
+| Interrogation par propriétés déclarées | Compréhension par géométrie et position |
 | Dépend du soin du modeleur | Fonctionne même si les propriétés sont absentes |
 | Requête statique sur attributs | Inférence dynamique depuis la géométrie |
 | Objets analysés en isolation | Objets analysés en relation |
+| L'IA recodes l'analyse à chaque session | L'environnement fournit le résultat — l'IA raisonne |
 
 ### Portée universelle
 
@@ -313,6 +320,18 @@ Les outils auteurs (Revit, ArchiCAD…) peuvent regénérer les identifiants uni
 
 Le moteur implémente une **stratégie de réconciliation** : si un GUID ne correspond plus, l'objet est retrouvé par **empreinte composite** (Type IFC + Nom + Coordonnées spatiales). Cette stratégie garantit la continuité des données entre versions de modèle.
 
+### Ouverture directe d'un IFC
+
+Un fichier IFC peut être ouvert sans projet `.bimview` associé. L'environnement s'active immédiatement :
+
+1. **Parsing & géométrie** — extraction des enveloppes géométriques, construction du SceneGraph
+2. **Analyse spatiale automatique** — relations, composantes connexes, bâtiments physiques détectés
+3. **Projet temporaire en mémoire** — aucun fichier créé sur disque
+4. **Reconnaissance visuelle** — lancée en background si la fonctionnalité est activée (opt-in)
+5. **Proposition de sauvegarde** — à la première modification (annotation, delta, règle), l'environnement propose de créer un fichier projet `.bimview`
+
+Toutes les fonctions d'analyse sont disponibles dès l'ouverture directe. Seule la persistance des modifications requiert la création d'un projet.
+
 ---
 
 ## 4. Chargement & Fédération
@@ -336,6 +355,14 @@ Le moteur implémente une **stratégie de réconciliation** : si un GUID ne corr
 - **500 MB maximum par fichier**
 - Chargement progressif : l'interface devient utilisable avant que le fichier soit entièrement chargé
 
+### Cas du projet multi-bâtiments
+
+Un fichier IFC peut déclarer un seul `IfcBuilding` tout en contenant plusieurs bâtiments physiquement distincts — c'est une pratique courante dans les exports de projets d'ensemble. L'environnement ne se fie pas à la déclaration IFC : il **détecte les bâtiments physiques réels** par analyse des composantes connexes (voir §5 et outil `detectBuildings`).
+
+- Un ensemble de murs, planchers et toitures physiquement séparés constitue un bâtiment physique distinct, quelle que soit la hiérarchie `IfcSite / IfcBuilding` déclarée
+- Chaque bâtiment physique détecté est indexé séparément dans le SceneGraph et peut faire l'objet d'une analyse indépendante
+- Ce mécanisme s'applique dès le chargement d'un fichier seul — il ne requiert pas de fédération
+
 ---
 
 ## 5. Moteur géométrique
@@ -344,7 +371,7 @@ Le moteur implémente une **stratégie de réconciliation** : si un GUID ne corr
 
 Chaque objet IFC expose sa géométrie selon le schéma buildingSMART. Le moteur extrait les **enveloppes géométriques** de chaque objet (définition + coordonnées) pour réaliser les analyses spatiales.
 
-### Les 4 primitives spatiales fondamentales
+### Les primitives spatiales fondamentales
 
 | Primitive | Définition | Exemple d'usage |
 |---|---|---|
@@ -352,6 +379,7 @@ Chaque objet IFC expose sa géométrie selon le schéma buildingSMART. Le moteur
 | **Adjacence** | A et B partagent une face ou une frontière | Quelles fenêtres appartiennent à cet espace ? |
 | **Intersection** | Les géométries de A et B se croisent | Quelle portion du garde-corps est dans cette pièce ? |
 | **Mesure** | Surface, longueur, volume d'un objet ou d'un résultat | Linéaire, ratio, surface nette |
+| **Composantes connexes** | Groupes d'éléments physiquement connectés (murs jointifs, planchers superposés) — indépendamment de la hiérarchie `IfcBuilding` | Combien de bâtiments physiques distincts dans ce fichier ? |
 
 ### Entités déduites
 
@@ -524,25 +552,36 @@ Ce type d'erreur est **invisible sur un plan 2D** et passe souvent inaperçu lor
 - **Phase 2** : remplacement par `three-mesh-bvh` derrière `SpatialIndex.queryMeshDistance()` — distance exacte en O(log n), temps réel sur modèles lourds
 - Le SceneGraph conserve les références de maillage en mémoire précisément pour permettre ces calculs
 
-### Structure d'une règle du catalogue
+### Structure d'une règle du catalogue — format skill
 
-Chaque règle du catalogue possède une structure minimale stable. Cette structure sera enrichie au fil du développement.
+Une règle du catalogue est un **skill LLM-exécutable** : un fichier combinant un frontmatter YAML (métadonnées stables) et un corps Markdown (instructions procédurales). L'agent IA peut lire ce fichier et l'exécuter directement en appelant les primitives MCP — sans moteur de règles intermédiaire.
 
-```json
-{
-  "id": "nf-habitat-circulation-ratio",
-  "name": "Ratio de circulation — logements",
-  "description": "La surface de circulation ne doit pas dépasser un seuil de la surface habitable totale",
-  "category": { "norme": "NF Habitat", "metier": "Architecture", "usage": "Logement" },
-  "params": {
-    "seuil_ratio_circulation": { "default": 0.18, "unit": "ratio", "label": "Ratio max circulation" }
-  },
-  "source": "NF Habitat — Qualité d'usage",
-  "primitives": ["containment", "mesure"]
-}
+```markdown
+---
+id: detect-dwellings
+name: Détection des logements
+version: 1.0
+description: Identifier les logements comme clusters d'espaces connectés via une porte, délimités par une porte palière
+category: { norme: "", metier: Architecture, usage: Logement }
+primitives: [queryConnectedComponents, queryAdjacent, queryContained]
+params:
+  seuil_surface_min: { default: 9, unit: m², label: Surface plancher minimum }
+triggers: [on_request]
+---
+
+## Instructions
+
+1. Appeler `queryConnectedComponents` pour identifier les groupes d'espaces physiquement connectés
+2. Pour chaque composante, utiliser `queryAdjacent` pour détecter les portes palières
+   (IfcDoor adjacente à la limite du groupe + donnant sur une circulation commune)
+3. Un logement = composante connexe délimitée par au moins une porte palière
+4. Exclure les composantes dont la surface totale est inférieure à `seuil_surface_min`
+5. Retourner la liste des logements avec leur composition (espaces, surface, étage)
 ```
 
-Les paramètres (`params`) sont les **seuls éléments modifiables** lors d'un fork. La logique spatiale reste celle de la règle source.
+**Pourquoi ce format** : `searchRules(intent)` retourne la règle complète — le LLM dispose immédiatement des métadonnées (primitives requises, paramètres) et des instructions pour l'exécuter. Le moteur de règles n'a pas à interpréter une logique déclarative : l'agent est le moteur d'exécution, les primitives MCP sont ses instruments.
+
+Les paramètres (`params`) sont les **seuls éléments modifiables** lors d'un fork. Le corps procédural reste celui de la règle source.
 
 ### Fork d'une règle du catalogue
 
@@ -686,6 +725,19 @@ Couche 3 — Fond de carte             ← arrière-plan
 - Les données cartographiques ne peuvent **jamais masquer** la maquette
 - Transparence optionnelle des couches cartographiques pour lire le contexte sans gêner la maquette
 
+### Diagnostic automatique de géoréférencement
+
+À l'ouverture de chaque modèle, l'environnement évalue le niveau de fiabilité du géoréférencement et adapte son comportement en conséquence :
+
+| Niveau | Condition | Comportement |
+|---|---|---|
+| **Formel** | `IfcMapConversion` + `IfcProjectedCRS` présents et cohérents | Superposition cartographique directe |
+| **Déductif** | CRS inférable depuis les paramètres du fichier (ex : projection identifiable depuis les coordonnées) | Superposition avec avertissement de fiabilité |
+| **Local** | Coordonnées locales sans CRS identifiable | Placement géographique manuel demandé à l'utilisateur |
+| **Incohérent** | Métadonnées contradictoires ou coordonnées hors-limites géographiques | Alerte + placement manuel requis |
+
+**Compensation par delta** : le point de référence géographique saisi manuellement est stocké dans `delta.json` et prend priorité sur les métadonnées IFC pour toutes les opérations de superposition cartographique. Le niveau de diagnostic est recalculé après toute correction.
+
 ---
 
 ## 13. Comparaison de versions
@@ -729,6 +781,23 @@ Le fichier IFC source n'est jamais altéré.
 - **Modification en masse** : appliquer une valeur à une sélection d'objets
 - Les paramètres ajoutés sont **interrogeables dans le moteur de règles** exactement comme les propriétés IFC natives
 - Les paramètres ajoutés sont **interrogeables via la recherche** (section 10)
+
+### Traçabilité géométrique des entrées delta
+
+Chaque entrée delta produite par l'agent IA est **horodatée et liée à son origine** — la frame du parcours d'inspection ou l'appel MCP qui a justifié la correction :
+
+```json
+{
+  "expressId": 1234,
+  "functionalType": "chaudière",
+  "source": "wt_a3f:f4",
+  "timestamp": "2026-04-28T10:23:00Z",
+  "geometryHash": "a3f4b2…",
+  "validatedBy": "user | auto"
+}
+```
+
+**Re-validation en comparaison de versions** : lors d'un chargement de version (§13), les entrées delta sont re-évaluées. Si la géométrie de l'objet cible a changé au-delà d'une tolérance configurable (détecté via `geometryHash`), l'entrée est marquée **"à re-vérifier"** — la correction reste active mais l'utilisateur est alerté que l'objet a évolué depuis la validation.
 
 ---
 
@@ -823,10 +892,17 @@ L'ensemble des outils MCP exposés forme un **contrat fonctionnel stable**. Tout
 // MCP Tool definitions (schéma JSON Schema sous le capot)
 
 // — Requêtes spatiales —
-tool queryRadius(objectId: string, radiusMeters: number): IFCObject[]
-tool queryContained(zone: ZoneId | BoundingBox): IFCObject[]
-tool queryIntersecting(objectId: string): IFCObject[]
-tool queryAdjacent(objectId: string, toleranceMeters?: number): IFCObject[]
+tool queryRadius(objectId: string, radiusMeters: number): ToolReturn<IFCObject[]>
+tool queryContained(zone: ZoneId | BoundingBox): ToolReturn<IFCObject[]>
+tool queryIntersecting(objectId: string): ToolReturn<IFCObject[]>
+tool queryAdjacent(objectId: string, toleranceMeters?: number): ToolReturn<IFCObject[]>
+tool queryConnectedComponents(
+  seed?: string,            // expressId de départ — si absent, analyse tout le modèle
+  connectionTypes?: ('wall-wall' | 'floor-ceiling' | 'structural')[]
+): ToolReturn<ComponentGroup[]>
+tool detectBuildings(
+  modelId?: string          // si absent, modèle courant
+): ToolReturn<BuildingDetectionResult>  // N bâtiments physiques, bbox, objets membres, confiance
 
 // — Mesures —
 tool measureDistance(objectId1: string, objectId2: string): number   // mètres
@@ -891,6 +967,25 @@ tool renderObjectView(
 #### Composabilité
 
 Le viewer et l'agent IA sont découplés par le protocole MCP. Aucune modification du viewer n'est nécessaire pour changer d'agent. Aucune modification de l'agent n'est nécessaire pour une nouvelle version du viewer, tant que le contrat MCP est respecté.
+
+#### Convention de retour des outils MCP
+
+Tous les outils MCP du contrat retournent un `ToolReturn<T>`. Le champ `summary` permet à l'agent de raisonner immédiatement sur le résultat en langage naturel, sans avoir à parser la structure `data` :
+
+```typescript
+interface ToolReturn<T> {
+  data:     T          // résultat structuré (IFCObject[], number, BoundingBox…)
+  summary:  string     // résumé en langage naturel — l'agent raisonne dessus directement
+  metadata: {
+    executionTimeMs: number
+    modelId:         string
+    objectCount?:    number
+    warnings?:       string[]
+  }
+}
+```
+
+**Principe de conception** : chaque outil MCP répond à une **question complète** au bon niveau d'abstraction. L'agent ne doit jamais avoir à reconstituer par des appels en série ce que l'environnement peut fournir en un appel. Exposer des briques élémentaires et laisser le LLM recoder l'analyse, c'est précisément le paradigme que cet environnement remplace.
 
 ---
 
@@ -1182,6 +1277,15 @@ avec α + β + γ = 1  (pondération configurable, défaut 0.20/0.60/0.20)
 | 0.60 – 0.79 | Notification passive — l'utilisateur peut consulter et corriger |
 | < 0.60 | Demande de validation active — présentée à l'utilisateur avec la proposition |
 
+#### Provenance du score composite
+
+Chaque score composite est accompagné de sa **décomposition par canal** — visible par l'agent et par l'utilisateur. Quand un canal est structurellement non-informatif (ex : modèle exporté entièrement en `IfcBuildingElementProxy`, canal IFC systématiquement nul), la pondération effective peut être ajustée pour ne pas pénaliser les deux autres canaux.
+
+```
+resource scenegraph://provenance/{objectId}
+→ { ifc: 0.0, ai: 0.87, spatial: 0.72, composite: 0.76, weights: [0.0, 0.7, 0.3] }
+```
+
 #### Flux de validation utilisateur
 
 Pour les objets sous le seuil de validation automatique :
@@ -1274,6 +1378,7 @@ Pour toute demande soumise, l'agent :
 | **Ask** | Ambiguïté critique — deux interprétations radicalement différentes possibles | L'agent pose une question ciblée (une seule) pour lever l'ambiguïté avant de proposer |
 | **Propose** | Intention interprétable | L'agent présente les hypothèses identifiées et les règles du catalogue associées — attend validation avant d'exécuter |
 | **Execute** | Mode choisi par l'utilisateur ou intention non ambiguë | L'agent exécute directement et présente les résultats avec les hypothèses traitées |
+| **Describe** | Demande de description ou de compréhension — sans vérification de conformité | L'agent produit une fiche descriptive du modèle ou d'une zone : structure, typologies, organisation spatiale |
 
 #### Interaction avec le catalogue de règles
 
@@ -1411,12 +1516,26 @@ L'agent traite explicitement les cas d'incertitude :
 
 - L'utilisateur pose des questions en **langage naturel**
 - L'IA dispose du SceneGraph enrichi (géométrie + reconnaissance visuelle + relations calculées) et du catalogue de règles métiers pour raisonner
-- Cinq usages :
+- Six usages :
   1. **Création de règles** (section 8 — Mode IA)
   2. **Interrogation directe** : *"Le garde-corps de la chambre 201 respecte-t-il la norme PMR ?"*
   3. **Vérification intelligente** : interprétation, consultation catalogue, hypothèses, exécution
   4. **Validation de la reconnaissance** : consulter, confirmer ou corriger les identifications visuelles
   5. **Navigation dans le catalogue** : parcourir, sélectionner, forker et appliquer des règles existantes
+  6. **Description** : *"Décris-moi la structure de ce projet"* — fiche narrative sans analyse de conformité
+
+#### Fiche descriptive du modèle (Mode Describe)
+
+L'agent produit une description narrative et structurée du modèle ou d'une zone — utile pour documenter, préparer un audit, ou comprendre un projet inconnu.
+
+```typescript
+tool describeModel(
+  scope?: ZoneId | 'full',          // zone ciblée ou modèle complet
+  detail?: 'summary' | 'detailed'   // niveau de détail — défaut 'summary'
+): ToolReturn<ModelDescription>     // description narrative + statistiques structurées
+```
+
+Le mode Describe n'exécute aucune règle de conformité. Il synthétise ce que l'environnement a compris : discipline, typologies dominantes, organisation spatiale, bâtiments physiques détectés, état du géoréférencement.
 
 **Panneau de reconnaissance**
 
@@ -1425,6 +1544,34 @@ Un panneau dédié affiche l'état de la reconnaissance visuelle :
 - Objets en attente de validation (classés par priorité d'analyse)
 - Historique des validations de la session
 - Statistiques : % classifiés, % reconnus par IA, % validés manuellement
+
+---
+
+### 17.5 Rapport de santé du modèle
+
+À l'ouverture de tout modèle, l'environnement produit automatiquement un **rapport de santé** — un diagnostic de l'état du fichier IFC selon cinq volets. Ce rapport est disponible immédiatement, avant toute analyse métier.
+
+| Volet | Ce qui est évalué |
+|---|---|
+| **Placement** | Objets dont la position géométrique réelle est incohérente avec leur niveau déclaré (au-delà d'une tolérance configurable) |
+| **Géoréférencement** | Niveau de fiabilité du géoréférencement selon le diagnostic §12 (Formel / Déductif / Local / Incohérent) |
+| **Population attributaire** | Taux d'objets avec un `IfcType` précis, un nom non vide, un niveau renseigné |
+| **Fermeture géométrique** | Espaces non fermés, murs non jointifs, trous dans planchers — incohérences topologiques |
+| **Cohérence schéma** | Adéquation entre la déclaration IFC (hiérarchie Site/Bâtiment/Étage) et la structure physique réelle détectée |
+
+**Score de santé global** : moyenne pondérée des cinq volets, configurable (0–100). Affiché dans un panneau dédié à l'ouverture.
+
+```
+resource scenegraph://healthreport/{modelId}
+→ rapport complet JSON avec score global, détail par volet, liste des objets signalés
+```
+
+```typescript
+// Aussi accessible comme outil MCP pour l'agent
+tool getModelHealthReport(modelId?: string): ToolReturn<HealthReport>
+```
+
+Le rapport de santé ne bloque aucune analyse — il informe. L'environnement traite le modèle tel qu'il est. Le rapport permet à l'utilisateur et à l'agent de calibrer leur confiance dans les résultats.
 
 ---
 
